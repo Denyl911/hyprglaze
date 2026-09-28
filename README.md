@@ -44,7 +44,7 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 | `whorl` | Cyclic cellular automaton on a phosphor CRT: two-tone spiral waves break around windows, music wired into the rules |
 | `fur` | A short combed pile: the cursor parts it, windows crush it flat and heap a ridge at their edges, bass shivers the coat |
 | `amorphous` | Flat liquid blobs in two layers, colors rolled from the theme; they drift, meet gentle resistance at windows, wrap across the screen, loosen and ripple with music, and the cursor is a lamp on their edges |
-| `laser` | Lasers fired from opposite screen corners toward the cursor in two theme colours, reflecting off windows and the screen's edges and dimming with every bounce |
+| `laser` | Lasers fired from opposite screen corners toward the cursor in two theme colours, reflecting off windows and the screen's edges and dimming with every bounce, through smoke they light up; one resonates with the lows, the other with the highs |
 | `crystal` | A ray-traced cluster of quartz shards with real refraction and dispersion; your windows are the lights, and the focused one is the key light |
 
 ## Requirements
@@ -92,6 +92,10 @@ theme = "Rosé Pine"
 # color2  = 5              # second beam's theme slot
 # smoke   = 0.6            # drifting smoke the beams light up; 0 = none
 # speckle = 0.6            # laser speckle on scattered light; 0 = none
+# music   = true           # the first beam resonates with the lows, the second
+#                          # with the highs; bass kicks fire pulses down the first
+# react   = 1.0            # strength of the music response
+# sink    = "..."          # PulseAudio monitor source (auto-detected by default)
 
 [amorphous]
 # size     = 1.0        # blob radius multiplier

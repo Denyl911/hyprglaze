@@ -7,7 +7,8 @@ uniform vec3 iResolution;
 // beams back to back. Legs from iLaserSplit on are the second beam. A
 // beam's first leg starts at its emitter; every later leg at a bounce.
 uniform vec4 iLaserSeg[64];
-// Per leg: (intensity, light that arrived at its start, flare twinkle, 0).
+// Per leg: (intensity, light that arrived at its start, flare twinkle,
+// distance along its beam to the leg's start).
 uniform vec4 iLaserLeg[64];
 uniform int iLaserCount;
 uniform int iLaserSplit;
@@ -21,6 +22,13 @@ uniform float iLaserSmoke;
 // changes only when the beams move, as real speckle decorrelates.
 uniform float iLaserSpeckle;
 uniform float iLaserSeed;
+// Music: each beam's band energy (x = the first beam's lows, y = the
+// second's highs), the phase of the wave travelling along each, kick pulse
+// ages as a fraction of their life (1 = idle), and the response strength.
+uniform vec2 iLaserBand;
+uniform vec2 iLaserPhase;
+uniform vec4 iLaserPulse;
+uniform float iLaserReact;
 
 uniform vec3 iPalette[16];
 uniform int iPaletteSize;
@@ -97,10 +105,34 @@ float speckle(vec2 fc) {
                mix(expSample(i + vec2(0, 1)), expSample(i + vec2(1, 1)), u.x), u.y);
 }
 
-float segDist(vec2 p, vec2 a, vec2 b) {
+// Distance to the segment, and how far along it (0-1) the nearest point is.
+vec2 segDist(vec2 p, vec2 a, vec2 b) {
     vec2 pa = p - a, ba = b - a;
     float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-4), 0.0, 1.0);
-    return length(pa - ba * h);
+    return vec2(length(pa - ba * h), h);
+}
+
+// How a beam carries its music at distance `s` along it (from its emitter,
+// through its bounces): a swell with its band's energy, times a travelling
+// wave of brightness — long and slow on the low beam, fine and fast on the
+// high one — plus, on the low beam, bright packets fired by kicks.
+float resonance(bool high, float s) {
+    float H = iResolution.y;
+    float e = high ? iLaserBand.y : iLaserBand.x;
+    float k = 6.2831853 / (H * (high ? 0.022 : 0.12));
+    float wave = 1.0 + 0.55 * e * sin(s * k - (high ? iLaserPhase.y : iLaserPhase.x));
+    float gain = (1.0 + 0.6 * e) * wave;
+    if (!high && iLaserReact > 0.0) {
+        float speed = H * 1.4;
+        float width = H * 0.03;
+        for (int j = 0; j < 4; j++) {
+            float age = iLaserPulse[j];
+            if (age >= 1.0) continue;
+            float x = (s - speed * age * 1.6) / width;
+            gain += 1.4 * iLaserReact * exp(-x * x) * (1.0 - age);
+        }
+    }
+    return gain;
 }
 
 void main() {
@@ -121,27 +153,35 @@ void main() {
     float near_r = w * 40.0;
     vec3 flare_glow = vec3(0.0);
     for (int i = 0; i < iLaserCount && i < 64; i++) {
-        vec3 beam = (i >= iLaserSplit) ? beam2 : beam1;
+        bool high = i >= iLaserSplit;
+        vec3 beam = high ? beam2 : beam1;
         vec4 s = iLaserSeg[i];
         vec4 L = iLaserLeg[i];
         float I = L.x;
         float arrived = L.y;
-        float d = segDist(fc, s.xy, s.zw);
+        vec2 dh = segDist(fc, s.xy, s.zw);
+        float d = dh.x;
         float r = length(fc - s.xy);
+        // The band's swell also reaches the smoke; the travelling wave and
+        // the pulses are drawn on the beam itself.
+        float swell = 1.0 + 0.6 * (high ? iLaserBand.y : iLaserBand.x);
 
         if (d < near_r || r < near_r) {
+            float g = resonance(high, L.w + dh.y * length(s.zw - s.xy));
+            // A louder beam also runs a little thicker.
+            float wb = w * (1.0 + 0.3 * (high ? iLaserBand.y : iLaserBand.x));
             // The hot core burns toward white; the halo keeps the colour.
             vec3 core_c = mix(beam, vec3(1.0), 0.65);
-            light += core_c * exp(-(d * d) / (w * w)) * I;
-            light += beam * exp(-d / (w * 5.0)) * I * 0.35;
+            light += core_c * exp(-(d * d) / (wb * wb)) * I * g;
+            light += beam * exp(-d / (wb * 5.0)) * I * 0.35 * g;
             // A flare where the beam struck (or left its emitter), sized
             // and lit by what arrived.
-            light += core_c * exp(-r * r / (w * w * 9.0)) * arrived * 0.9;
-            flare_glow += beam * exp(-r / (w * 7.0)) * arrived * 0.45 * L.z;
+            light += core_c * exp(-r * r / (w * w * 9.0)) * arrived * 0.9 * swell;
+            flare_glow += beam * exp(-r / (w * 7.0)) * arrived * 0.45 * L.z * swell;
         }
         // Light carried into the smoke around the beam, and the patch a
         // strike lights up.
-        lit += beam * (exp(-d / scatter_r) * I * 0.4 + exp(-r / (scatter_r * 2.5)) * arrived * 0.5);
+        lit += beam * swell * (exp(-d / scatter_r) * I * 0.4 + exp(-r / (scatter_r * 2.5)) * arrived * 0.5);
     }
 
     // Scattered light is speckled; the beam core in clear air is not.
