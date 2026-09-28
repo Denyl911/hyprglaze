@@ -23,6 +23,7 @@
 #   start_daemon OUT TAG     launch hyprglaze pinned to an output
 #   place CLS WS LX LY W H   open a probe window at monitor-local coords
 #   shot NAME OUTPUT         grim one output into $OUT/shots/NAME.png
+#   show_harness             show the nested outputs on the host (full fps)
 #   scan FILE COLOUR         "x0 y0 x1 y1 count" or "none"
 #   ring_of FILE             bbox of the focused (red) or tracked (green) ring
 #   expect EXPR DESC         assert and count
@@ -342,6 +343,15 @@ host_visible() {   # block until the nested windows are on the host's active wor
 }
 # grab: immediate; shot: settles 0.4s first. Both wait for host visibility
 # and bound grim, so a stall is a failed check rather than a hung run.
+show_harness() {   # show the nested outputs on the host at full frame rate
+    # Hidden, the host throttles them to misc:render_unfocused_fps (15): any
+    # timing measurement then reads ~66ms frames as lag. special:harness is
+    # where the host's window rule parks them; this is a compositor request,
+    # not input injection, so it is safe against the live session.
+    [ "$(hyprctl -j monitors | jq -r '.[]|select(.focused)|.specialWorkspace.name')" = special:harness ] && return 0
+    hyprctl dispatch 'hl.dsp.workspace.toggle_special("harness")' >/dev/null
+    sleep 0.5
+}
 grab() {           # NAME OUTPUT — up to 3 tries: a workspace switch mid-grab
                    # stalls grim, and the timeout then lands on the retry.
     local try
