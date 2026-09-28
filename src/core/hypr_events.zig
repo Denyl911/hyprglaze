@@ -77,6 +77,16 @@ pub const HyprEvents = struct {
     monitor_name: [64]u8 = undefined,
     monitor_name_len: u8 = 0,
 
+    /// Addresses from `closewindow` events, in a single-producer ring:
+    /// the reader thread stores the slot, then publishes it by bumping
+    /// `closed_head`. The main thread keeps its own tail (`drainClosed`).
+    /// Absence from the geometry snapshot can't tell a closed window from
+    /// one on another workspace; this is the event that can.
+    closed_ring: [closed_ring_len]std.atomic.Value(u64) = [_]std.atomic.Value(u64){.init(0)} ** closed_ring_len,
+    closed_head: std.atomic.Value(u64) = .init(0),
+
+    pub const closed_ring_len = 64;
+
     pub fn monitorName(self: *const HyprEvents) []const u8 {
         return self.monitor_name[0..self.monitor_name_len];
     }
@@ -170,6 +180,24 @@ pub const HyprEvents = struct {
         lockSpin(&self.snapshot_mutex);
         defer self.snapshot_mutex.unlock();
         out.* = self.snapshot;
+    }
+
+    /// Copy the addresses closed since `tail` into `out` and advance
+    /// `tail`. A reader that fell more than a ring behind loses the oldest
+    /// entries; consumers must tolerate a missed close.
+    pub fn drainClosed(self: *const HyprEvents, tail: *u64, out: []u64) []u64 {
+        const head = self.closed_head.load(.acquire);
+        if (head -| tail.* > closed_ring_len) tail.* = head - closed_ring_len;
+        var n: usize = 0;
+        while (tail.* < head and n < out.len) : (tail.* += 1) {
+            out[n] = self.closed_ring[tail.* % closed_ring_len].load(.acquire);
+            n += 1;
+        }
+        return out[0..n];
+    }
+
+    pub fn closedHead(self: *const HyprEvents) u64 {
+        return self.closed_head.load(.acquire);
     }
 
     pub fn lastHeartbeatMs(self: *const HyprEvents) i64 {
@@ -272,6 +300,15 @@ fn handleLine(self: *HyprEvents, line: []const u8) void {
         return;
     }
 
+    if (std.mem.eql(u8, evt, "closewindow")) {
+        const addr = parseHexAddr(data);
+        if (addr == 0) return;
+        const head = self.closed_head.load(.monotonic);
+        self.closed_ring[head % HyprEvents.closed_ring_len].store(addr, .release);
+        self.closed_head.store(head + 1, .release);
+        return;
+    }
+
     const monitor_events = [_][]const u8{
         "monitoradded",
         "monitoraddedv2",
@@ -290,8 +327,8 @@ fn handleLine(self: *HyprEvents, line: []const u8) void {
         return;
     }
 
-    // Everything else (workspace/window lifecycle, submap, bell, …) is
-    // ignored: the Lua watcher's hg:geo events supersede the old
+    // Everything else (workspace/window lifecycle other than closewindow,
+    // submap, bell, …) is ignored: the Lua watcher's hg:geo events supersede the old
     // dirty-flag machinery — any change that matters shows up as a new
     // snapshot within one watcher tick. That includes workspacev2:
     // workspace identity rides inside hg:geo so it stays atomic with
@@ -658,6 +695,31 @@ test "handleLine ignored events leave state untouched" {
     try std.testing.expect(!d.monitor);
     try std.testing.expect(!d.config);
     try std.testing.expectEqual(@as(u64, 0), ev.snapshotGen());
+}
+
+test "handleLine closewindow queues the address once" {
+    var ev = testEvents();
+    handleLine(&ev, "closewindow>>5a3b10");
+    handleLine(&ev, "closewindow>>");
+    var tail: u64 = 0;
+    var buf: [8]u64 = undefined;
+    const got = ev.drainClosed(&tail, &buf);
+    try std.testing.expectEqual(@as(usize, 1), got.len);
+    try std.testing.expectEqual(@as(u64, 0x5a3b10), got[0]);
+    try std.testing.expectEqual(@as(usize, 0), ev.drainClosed(&tail, &buf).len);
+}
+
+test "drainClosed skips entries a slow reader lost to the ring" {
+    var ev = testEvents();
+    var line_buf: [32]u8 = undefined;
+    for (1..HyprEvents.closed_ring_len + 11) |i| {
+        handleLine(&ev, std.fmt.bufPrint(&line_buf, "closewindow>>{x}", .{i}) catch unreachable);
+    }
+    var tail: u64 = 0;
+    var buf: [HyprEvents.closed_ring_len]u64 = undefined;
+    const got = ev.drainClosed(&tail, &buf);
+    try std.testing.expectEqual(@as(usize, HyprEvents.closed_ring_len), got.len);
+    try std.testing.expectEqual(@as(u64, 11), got[0]);
 }
 
 test "handleLine malformed lines do not crash" {

@@ -318,6 +318,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // rebased against the monitor origin the snapshot carries.
     var cached_snapshot = hypr.VisibleWindows{};
     var last_snapshot_gen = events.snapshotGen();
+    var closed_tail = events.closedHead();
+    var closed_buf: [hypr_events.HyprEvents.closed_ring_len]u64 = undefined;
+    var workspace_switches: u32 = 0;
     events.copySnapshot(&cached_snapshot);
     slide.seed(cached_snapshot.workspace_id);
 
@@ -628,7 +631,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     // ago, captured here from the previous snapshot; the
                     // strip's own -1/+1 buckets are the nearest ids, which
                     // is only the same thing for a one-step switch.
-                    switch (slide.noteWorkspace(cached_snapshot.workspace_id, time_f64)) {
+                    const ws_change = slide.noteWorkspace(cached_snapshot.workspace_id, time_f64);
+                    if (ws_change != .none) workspace_switches +%= 1;
+                    switch (ws_change) {
                         .slide => {
                             captureOutgoing(&outgoing, &prev_snapshot, slide.dir);
                             log.debug("slide: ws {d} -> {d}, {d} outgoing windows", .{ prev_snapshot.workspace_id, cached_snapshot.workspace_id, outgoing.count });
@@ -770,6 +775,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 .focused_title_len = cached_focused_title_len,
                 .palette = if (pal) |*p| p else null,
                 .workspace_slide = slide.progress(time_f64),
+                .workspace_switches = workspace_switches,
+                .closed_windows = events.drainClosed(&closed_tail, &closed_buf),
             });
             effect.upload(&shader_prog);
 

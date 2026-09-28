@@ -60,6 +60,13 @@ pub const FrameState = struct {
     /// Workspace slide settling: 0 = switch just happened, 1 = settled.
     /// Effects can use it to suppress per-window churn mid-slide.
     workspace_slide: f32 = 1.0,
+    /// Bumped on every workspace change, slid or snapped. Window rects jump
+    /// across a switch without the windows themselves having moved.
+    workspace_switches: u32 = 0,
+    /// Windows whose `closewindow` event arrived since the last frame.
+    /// Absence from `windows` alone is ambiguous: a window on another
+    /// workspace is also absent.
+    closed_windows: []const u64 = &.{},
 };
 
 /// The active desktop effect. Method contract for every variant Context:

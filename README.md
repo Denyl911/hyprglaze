@@ -39,7 +39,7 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 | `voltaic` | Lightning arcs between window borders, St. Elmo's fire on the focused frame, beat-driven discharges |
 | `moire` | Wave-interference ripples from invisible bodies orbiting windows, gravitationally lensed, audio-reactive |
 | `swarm` | Boid murmuration in pixel-block ink; a hawk dives on beats, silence settles the birds onto windows |
-| `ivy` | Bioluminescent vines climb window frames and screen edges, spread frame to frame, wilt in place when windows move |
+| `ivy` | Bioluminescent vines climb window frames and screen edges until the frame is clad, then mature in place; they wilt when their window moves or closes and wait dormant while it is on another workspace |
 | `weft` | Windows shine through a grainy diffraction weave; the audio waveform threads through the fringes |
 | `whorl` | Cyclic cellular automaton on a phosphor CRT: two-tone spiral waves break around windows, music wired into the rules |
 | `fur` | A short combed pile: the cursor parts it, windows crush it flat and heap a ridge at their edges, bass shivers the coat |
@@ -145,7 +145,7 @@ fuzz = true           # wave-interference field; false = comet dots + trails
 # sink = "..."        # PulseAudio monitor source (auto-detected by default)
 
 [ivy]
-growth = 1.0          # vine growth-rate multiplier
+growth = 1.0          # plant pace multiplier (growth and leaf lifetimes)
 brightness = 1.0      # foliage glow multiplier
 # sink = "..."        # PulseAudio monitor source (auto-detected by default)
 
