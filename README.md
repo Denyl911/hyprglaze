@@ -44,6 +44,7 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 | `whorl` | Cyclic cellular automaton on a phosphor CRT: two-tone spiral waves break around windows, music wired into the rules |
 | `fur` | A short combed pile: the cursor parts it, windows crush it flat and heap a ridge at their edges, bass shivers the coat |
 | `amorphous` | Flat liquid blobs in two layers, colors rolled from the theme; they drift, meet gentle resistance at windows, wrap across the screen, loosen and ripple with music, and the cursor is a lamp on their edges |
+| `laser` | Lasers fired from opposite screen corners toward the cursor in two theme colours, reflecting off windows and the screen's edges and dimming with every bounce |
 | `crystal` | A ray-traced cluster of quartz shards with real refraction and dispersion; your windows are the lights, and the focused one is the key light |
 
 ## Requirements
@@ -75,12 +76,22 @@ zig build run
 ```toml
 # Effects: particles, windowglow, cellbloom, concentric, fluid, starfield,
 #          visualizer, milkdrop, glitch, buddy, ai-buddy, tide, fire, swarm,
-#          voltaic, moire, ivy, whorl, weft, crystal, fur, amorphous
+#          voltaic, moire, ivy, whorl, weft, crystal, fur, amorphous, laser
 effect = "fluid"
 theme = "Rosé Pine"
 # output = "DP-1"     # monitor to render on; default is the focused one
 # output_wait = 60    # seconds to wait for a removed output to come back before
 #                     # exiting non-zero; 0 = forever (the default when unpinned)
+
+[laser]
+# corner  = "bottom-left"  # first emitter: bottom-left, bottom-right, top-left, top-right
+# beams   = 2              # 2 adds a second beam from the opposite corner
+# falloff = 0.82           # intensity kept at each bounce
+# width   = 1.6            # beam core radius in px
+# color   = 2              # first beam's theme slot (1-16, the color_NN numbers)
+# color2  = 5              # second beam's theme slot
+# smoke   = 0.6            # drifting smoke the beams light up; 0 = none
+# speckle = 0.6            # laser speckle on scattered light; 0 = none
 
 [amorphous]
 # size     = 1.0        # blob radius multiplier

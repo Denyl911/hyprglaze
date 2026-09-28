@@ -9,4 +9,5 @@ test {
     _ = @import("core/workspace_slide.zig");
     _ = @import("core/window_anim.zig");
     _ = @import("effects/particles/system.zig");
+    _ = @import("effects/laser/trace.zig");
 }
