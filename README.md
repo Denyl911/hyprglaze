@@ -104,7 +104,7 @@ theme = "Rosé Pine"
 
 [fur]
 # spacing = 23.0      # follicle spacing in px; finer shimmers and reads as noise
-# length  = 30.0      # pile height in px
+# length  = 30.0      # hair length in px (up to 200); longer hair lies further over
 # brightness = 1.0
 
 [crystal]

@@ -28,7 +28,11 @@ uniform float iFurBright;
 
 out vec4 fragColor;
 
+// Shells marched per pixel at the default 30px pile. Longer pile carries
+// the ray further across the screen, so it gets proportionally more: with
+// too few, each step jumps past whole strands and they break into dots.
 const int SHELLS = 22;
+const int MAX_SHELLS = 88;
 
 uint pcg(uint v) {
     v = v * 747796405u + 2891336453u;
@@ -181,13 +185,38 @@ void main() {
     vec2 wq = fc / 190.0;
     vec2 warp = vec2(sin(wq.y * 2.7 + wq.x * 1.3), cos(wq.x * 2.9 - wq.y * 1.1)) * cell * 0.45;
 
+    // A strand of length `pile` leaning by `lean` reaches across lean * pile
+    // on screen, so the pile's length is what makes the hair long. Scaled
+    // by the full length, not the crushed height: a pressed strand lies
+    // flat but is no shorter. 40/30 keeps the default 30px pile exactly as
+    // it was tuned.
+    vec2 reach = lean * (40.0 * pile / 30.0);
+    int shells = clamp(int(ceil(float(SHELLS) * pile / 30.0)), SHELLS, MAX_SHELLS);
+
+    // Front-to-back compositing: strand edges get a pixel of soft coverage
+    // and blend into whatever lies behind them, the next strand down or the
+    // skin. A hard in/out edge stair-steps along the strands, and on long
+    // hair lying nearly flat those stairs run long and crawl as the coat
+    // drifts.
     vec3 col = skin;
-    bool hit = false;
+    vec3 acc = vec3(0.0);
+    float alpha = 0.0;
+    // The strand being crossed, and what lay in front of it.
+    uint last_k = 0xFFFFFFFFu;
+    float last_a = 0.0;
+    vec3 acc_base = vec3(0.0);
+    float alpha_base = 0.0;
+    vec2 off = reach + par * pile_h * 1.6;
+    // Where the previous step sampled, and at what height: each step tests
+    // the whole stretch of ray since then, not just its end point.
+    vec2 s_prev = fc + off;
+    float h_prev = 1.0;
 
     // March from the tips down to the skin. The first strand met is the
     // topmost one along this ray, which is all an opaque strand needs.
-    for (int i = 0; i < SHELLS; i++) {
-        float h = 1.0 - float(i) / float(SHELLS - 1);
+    for (int i = 0; i < MAX_SHELLS; i++) {
+        if (i >= shells) break;
+        float h = 1.0 - float(i) / float(shells - 1);
         // Both the lean and the parallax are known functions of height, so
         // the sample point is moved instead of the strands. That keeps
         // every follicle inside its own grid cell: one hash per step, and
@@ -198,21 +227,36 @@ void main() {
         // round tips; carry it further and each strand is seen along its
         // length, crossing its neighbours, which is what turns dots into
         // overlapping hair.
-        vec2 s = fc + (lean * 40.0 + par * pile_h * 1.6) * h;
+        vec2 s = fc + off * h;
 
         vec2 g = (s + warp) / cell;
         vec2 ci = floor(g);
         vec2 f = g - ci;
         uint k = cellKey(ci);
+        // The previous sample, in this cell's frame.
+        vec2 fp = (s_prev + warp) / cell - ci;
+        float hp = h_prev;
+        s_prev = s;
+        h_prev = h;
 
         // Not every follicle grows to the same height; the spread is what
         // stops the coat looking mown.
         float len = (0.55 + hf(k) * 0.45) * pile_h;
-        float hz = h * pile;
-        if (hz > len) continue;
+        if (h * pile > len) continue;
 
+        // Continuous, not point-sampled: find where the stretch of ray since
+        // the last step passes closest to this follicle, over the part of it
+        // low enough to meet the strand. Sampling only the step's end point
+        // builds each strand from separate discs, and where the taper
+        // narrows them below the step — the whole tip of a long strand —
+        // the hair comes apart into a chain of circles.
         vec2 jit = vec2(hf(k ^ 0x9E3779B9u), hf(k ^ 0x85EBCA6Bu)) - 0.5;
-        float d = length(f - 0.5 - jit * 0.48);
+        vec2 fc0 = vec2(0.5) + jit * 0.48;
+        float t_lo = clamp((hp - len / pile) / max(hp - h, 1e-5), 0.0, 1.0);
+        vec2 e = f - fp;
+        float tt = clamp(dot(fc0 - fp, e) / max(dot(e, e), 1e-8), t_lo, 1.0);
+        float d = length(fp + e * tt - fc0);
+        float hz = mix(hp, h, tt) * pile;
         float up = hz / max(len, 1e-3);
         // Held near full thickness most of the way and drawn to a point
         // only at the very end. A straight linear taper leaves the upper
@@ -220,7 +264,22 @@ void main() {
         // skin, and the coat comes out as sparse bristle over black
         // rather than as anything you would want to touch.
         float r = 0.37 * pow(max(1.0 - up, 0.0), 0.5);
-        if (d > r) continue;
+        // Coverage over one pixel of edge (d and r are in cells).
+        float a = clamp((r - d) * cell + 0.5, 0.0, 1.0);
+        if (a <= 0.0) continue;
+        // A strand is usually met on several steps in a row, first near its
+        // thin tip and then through its body. It covers the pixel as much
+        // as its best encounter does: stacking every encounter would harden
+        // the soft edge again, and keeping only the first would leave the
+        // body see-through.
+        if (k != last_k) {
+            last_k = k;
+            last_a = 0.0;
+            acc_base = acc;
+            alpha_base = alpha;
+        }
+        if (a <= last_a) continue;
+        last_a = a;
 
         // Kajiya-Kay: a strand is a cylinder, so it has no single normal —
         // its highlight runs as a band around the fibre, set by the angle
@@ -253,14 +312,12 @@ void main() {
         // darker than the wallpaper and the coat reads as laid on top of
         // it instead of growing from it.
         col = mix(bg, col, smoothstep(0.0, 0.34, up));
-        hit = true;
-        break;
+        acc = acc_base + (1.0 - alpha_base) * a * col;
+        alpha = alpha_base + (1.0 - alpha_base) * a;
+        if (alpha > 0.995) break;
     }
-
-    if (!hit) {
-        // Straight down between the strands, to the background.
-        col = skin;
-    }
+    // Whatever the strands leave uncovered shows the skin between them.
+    col = acc + (1.0 - alpha) * skin;
 
     // The cursor leaves the parting lit, so the comb is legible.
     col += mix(accent, fg, 0.3) * exp(-distance(fc, iMouse.xy) / 170.0) * 0.03;

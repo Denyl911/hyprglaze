@@ -28,9 +28,10 @@ pub const Context = struct {
 
     flow: f32 = 0,
 
-    /// Follicle spacing and pile height, both in pixels. Spacing is the
-    /// knob that matters: fine strands shimmer as they move and turn to
-    /// noise behind text, so the default is deliberately coarse.
+    /// Follicle spacing and pile length, both in pixels. Spacing is the
+    /// knob that matters for texture: fine strands shimmer as they move and
+    /// turn to noise behind text, so the default is deliberately coarse.
+    /// Length is how far a strand reaches across the screen as it lies over.
     cell: f32,
     length: f32,
     brightness: f32,
@@ -51,7 +52,7 @@ pub const Context = struct {
             .allocator = allocator,
             .audio = audio,
             .cell = std.math.clamp(params.getFloat("spacing", 23.0), 4.0, 60.0),
-            .length = std.math.clamp(params.getFloat("length", 30.0), 2.0, 120.0),
+            .length = std.math.clamp(params.getFloat("length", 30.0), 2.0, 200.0),
             .brightness = std.math.clamp(params.getFloat("brightness", 1.0), 0.0, 3.0),
         };
     }
