@@ -9,14 +9,14 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 - Renders behind all windows via wlr-layer-shell, on a chosen monitor or one instance per monitor
 - Draws at the monitor's native resolution on scaled displays, via fractional-scale and viewporter
 - Shadertoy-compatible GLSL uniforms (iResolution, iTime, iMouse, iWindow)
-- Passes every visible window to shaders with smooth position tracking and identity-based focus
-- Receives compositor state as push events from a small Lua watcher installed inside Hyprland, so geometry stays live even mid-drag and nothing is ever polled
+- Passes every visible window to shaders with identity-based focus, tracking each one through Hyprland's own move and resize animation (the curve is detected and replayed, since Hyprland only reports where a window is going) and following interactive drags exactly
+- Receives compositor state as push events from a small Lua watcher installed inside Hyprland, so geometry stays live even mid-drag; the cursor is asked for directly each frame, so it is never more than one input event behind
 - Captures system audio through PipeWire/PulseAudio, auto-detecting the output monitor
 - Ships 365 Gogh terminal color schemes as palette uniforms; sprites recolor to match the theme
 - Loads pluggable effects, each with its own TOML config section
 - Reloads config live via inotify, including switching effects on the fly
-- Smooths cursor, geometry, and focus transitions independently of frame rate
-- Simulates CPU particle physics with Verlet integration, tracer trails, window collision, and cursor repulsion
+- Eases focus transitions independently of frame rate; cursor and geometry smoothing are optional extras
+- Runs real simulations where an effect calls for one: substepped XPBD ball physics with windows as moving colliders, 2D laser ray tracing, space-limited plant growth
 - Includes an animated desktop buddy, optionally driven by Claude Haiku on AWS Bedrock
 
 ## Effects
@@ -51,7 +51,7 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 
 hyprglaze talks to Hyprland through its Lua config manager, which means Hyprland 0.55 or newer configured with `hyprland.lua` rather than the classic `hyprland.conf`. At startup the daemon installs a watcher into the compositor's Lua state; if your Hyprland runs a classic config, hyprglaze will refuse to start.
 
-Developed and tested against 0.56.1. The watcher reads the monitor list through `hl.get_monitors()`; where that is unavailable it degrades to emitting only a heartbeat, which leaves the wallpaper running but tracking nothing, so prefer a recent Hyprland.
+Developed and tested against 0.56.2. The watcher reads the monitor list through `hl.get_monitors()`; where that is unavailable it degrades to emitting only a heartbeat, which leaves the wallpaper running but tracking nothing, so prefer a recent Hyprland.
 
 ## Install (Arch Linux)
 
@@ -132,7 +132,7 @@ duration = 0.25
 # window_spring = ""            # "mass,stiffness,dampening"
 
 [cursor]
-smoothing = 0.85
+smoothing = 0.0       # extra lag on the cursor; 0 = none (it is sampled every frame)
 
 [geometry]
 smoothing = 0.0       # extra lag on top of the mirrored animation; 0 = none
@@ -270,7 +270,12 @@ Requires the `aws` CLI and model access enabled for `us.anthropic.claude-haiku-4
 
 Most Hyprland companions poll the IPC socket for state. hyprglaze instead installs `src/core/watcher.lua` into the compositor's Lua VM at startup (and again after every config reload, which recreates that VM). The watcher runs a 16ms timer inside Hyprland, reads cursor and window state directly from compositor memory, and emits compact `custom>>hg:*` events on the socket2 event stream, but only when something actually changed.
 
-The daemon holds a single socket2 connection and receives everything as push: cursor moves, window geometry (including mid-drag, which Hyprland otherwise never reports), and a heartbeat. If the heartbeat stops, the daemon reinstalls the watcher automatically. Steady state with nothing moving is zero IPC traffic and zero wakeups on the Hyprland side beyond the timer tick.
+The daemon holds a single socket2 connection and receives window geometry as push (including mid-drag, which Hyprland otherwise never reports), plus Hyprland's own `closewindow` events and a heartbeat. If the heartbeat stops, the daemon reinstalls the watcher automatically. With nothing moving, the watcher sends nothing.
+
+Two things the watcher cannot provide are handled directly:
+
+- **The cursor.** The watcher only sees it once per 16ms tick, so the daemon asks for it (`j/cursorpos`, about 60µs, with a 4ms timeout) as each frame renders, falling back to the watcher's `hg:cur` push if the query fails.
+- **Animated geometry.** Hyprland reports a window's *goal* rect: `w.at` and `hyprctl clients` jump to the destination on the first tick while the window animates there, and nothing exposes the animated position. So `src/core/window_anim.zig` replays the compositor's `windowsMove` curve, read from `hyprctl animations` (beziers exactly; springs need `window_spring`, since their parameters are not exposed), the way workspace switches are mirrored. A goal that changes again within 50ms is an interactive drag, which Hyprland does not animate, and is followed as-is.
 
 The watcher emits one geometry event per monitor, carrying that monitor's active workspace, its layout origin, and its window strip; each daemon keeps only the events for its own output. So a second instance costs nothing on the compositor side — the install is idempotent and there is still exactly one timer — and because the origin travels in the same event as the rects it describes, a monitor that moves can never leave a daemon rebasing windows against a stale origin.
 
@@ -282,8 +287,8 @@ The watcher emits one geometry event per monitor, carrying that monitor's active
 |---------|------|-------------|
 | `iResolution` | `vec3` | Buffer dimensions in pixels. On a scaled display this is larger than the surface's logical size — a 3840x2160 monitor at scale 1.25 has a 3072x1728 surface and renders a 3840x2160 buffer. Window rects and the cursor arrive in the same space, so nothing has to convert; just don't assume it equals what `hyprctl monitors` calls the size |
 | `iTime` | `float` | Seconds since start |
-| `iMouse` | `vec4` | Cursor position (smoothed) |
-| `iWindow` | `vec4` | Focused window rect (smoothed) |
+| `iMouse` | `vec4` | Cursor position, sampled as the frame renders |
+| `iWindow` | `vec4` | Focused window rect, tracking its animation |
 | `iWindows[32]` | `vec4[]` | The window strip: active workspace rects plus adjacent-workspace rects parked one screen off-screen, all live; the whole strip slides on a workspace switch |
 | `iWindowCount` | `int` | Number of visible windows |
 | `iFocusedIndex` | `int` | Index of the focused window in `iWindows` (-1 if none) |
@@ -292,31 +297,39 @@ The watcher emits one geometry event per monitor, carrying that monitor's active
 | `iPalette[16]` | `vec3[]` | Theme color ramp |
 | `iPaletteSize` | `int` | Number of palette colors |
 | `iPaletteBg/Fg` | `vec3` | Theme background/foreground |
-| `iParticles[300]` | `vec4[]` | Effect data (particles, trails, buddy state) |
+| `iParticles[300]` | `vec4[]` | Shared effect data array (buddy, starfield, visualizer, glitch, moire) |
 | `iParticleCount` | `int` | Number of active entries |
 | `iSprite` | `sampler2D` | Sprite sheet texture / FBO feedback |
+
+Effects are free to upload their own uniforms and textures instead: `particles` sends its balls as `iBalls`, `laser` its beam legs as `iLaser*`, and `ivy` bins thousands of stems and leaves into screen tiles through data textures so each pixel visits only what can reach it.
 
 ## Adding an Effect
 
 1. Create `src/effects/myeffect.zig` with a `pub const Context` struct (or a directory for complex effects)
 2. Implement `init()`, `update(state)`, `upload(shader)`, `deinit()`
-3. Register in `src/effects.zig`: add import, tagged union variant, init branch, and default shader path
-4. Add a default shader at `shaders/myeffect.frag`
+3. Register in `src/effects.zig`: add the import and a tagged union variant. Init dispatch, the CLI name, and the default shader path are derived from the variant at comptime
+4. Add its shader at `shaders/myeffect.frag`
 5. Configure via a `[myeffect]` section in TOML, read params with `config_mod.EffectParams`
 
 New effects are picked up by `--list-effects` automatically via comptime reflection on the `Effect` union.
 
 ## Testing
 
-`zig build test` covers the parsers, the coordinate transform, and the config.
-Anything involving a compositor runs in a nested Hyprland instead, so a single
-physical monitor is enough to test the multi-monitor paths:
+`zig build test` covers the parsers, the coordinate transform, the config, the
+window animation replay, the particle physics, and the laser tracer. Anything
+involving a compositor runs in a nested Hyprland instead, so a single physical
+monitor is enough to test the multi-monitor paths:
 
 ```
 zig build
 scripts/hypr-harness.sh scripts/multimonitor.test.sh   # output pinning, coordinates, two instances
 scripts/hypr-harness.sh scripts/lifecycle.test.sh      # resize, effect rebuild, output loss
 scripts/hypr-harness.sh scripts/output-loss.test.sh    # output removed and returned, launch fade
+scripts/hypr-harness.sh scripts/window-anim.probe.sh   # rings track windows through animations
+scripts/hypr-harness.sh scripts/cursor.probe.sh        # crosshair vs the real pointer in motion
+scripts/hypr-harness.sh scripts/ivy.probe.sh           # growth, workspace round-trips, dieback
+scripts/hypr-harness.sh scripts/particles.probe.sh     # the gravity well, focus change, batting
+scripts/hypr-harness.sh scripts/laser.probe.sh         # beams aimed at a few points
 ```
 
 The harness boots a second Hyprland with two outputs, the right-hand one at a
@@ -328,9 +341,18 @@ than approximate.
 
 Your host compositor must leave the nested output's window alone, or it will be
 resized and every fixed test coordinate lands off-monitor; the harness says
-which rule to add when that happens. `scripts/*.probe.sh` are not tests but
-recorded measurements of compositor behaviour that the scenarios depend on —
-run one when an assumption needs settling rather than reasoning about it.
+which rule to add when that happens.
+
+The nested outputs live on the host's `special:harness` workspace, and a hidden
+surface is throttled to `misc:render_unfocused_fps` (15), which reads as lag in
+anything timed. Probes that measure timing call the harness's `show_harness`,
+which puts them on screen first.
+
+`scripts/*.probe.sh` record measurements: of compositor behaviour the code
+depends on (`geom-anim.probe.sh` is how `w.at` was shown to be the goal rect),
+of how closely the daemon tracks it (window animation to 1-5px, the cursor to
+one input event), or of how an effect looks. Run one when an assumption needs
+settling rather than reasoning about it.
 
 ## Credits
 
