@@ -107,6 +107,9 @@ pub const Config = struct {
     /// mirrors a custom `hl.curve` spring (Hyprland does not expose
     /// spring parameters over IPC). null = hyprutils defaults.
     workspace_spring: ?workspace_slide.Spring,
+    /// `[transition] window_spring = "mass,stiffness,dampening"` — the
+    /// same mirror for the spring on Hyprland's window move animation.
+    window_spring: ?workspace_slide.Spring,
     config_path: []const u8,
 
     /// Arena that owns every string slice inside `raw_table` (and hence
@@ -196,11 +199,12 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8, source_path: []cons
         .output_wait_set = t.get("output_wait") != null,
         .transition_duration = transition_params.getFloat("duration", 0.3),
         .fade_in = @max(0.0, transition_params.getFloat("fade_in", 1.0)),
-        .cursor_smoothing = cursor_params.getFloat("smoothing", 0.15),
-        .geometry_smoothing = geometry_params.getFloat("smoothing", 0.12),
+        .cursor_smoothing = cursor_params.getFloat("smoothing", 0.0),
+        .geometry_smoothing = geometry_params.getFloat("smoothing", 0.0),
         .workspace_slide = parseSlideOverride(transition_params.getString("workspace_slide", null)),
         .workspace_duration = transition_params.getFloat("workspace_duration", 0),
         .workspace_spring = parseSpring(transition_params.getString("workspace_spring", null)),
+        .window_spring = parseSpring(transition_params.getString("window_spring", null)),
         .config_path = try allocator.dupe(u8, source_path),
         .raw_arena = result.arena,
         .raw_table = t,
@@ -239,7 +243,7 @@ fn parseSpringField(field: ?[]const u8) ?f32 {
 }
 
 fn warnSpring(s: []const u8) ?workspace_slide.Spring {
-    log.warn("invalid workspace_spring '{s}' (want \"mass,stiffness,dampening\") — using defaults", .{s});
+    log.warn("invalid spring '{s}' (want \"mass,stiffness,dampening\") — using defaults", .{s});
     return null;
 }
 
@@ -425,7 +429,7 @@ test "parse config defaults when fields missing" {
     try std.testing.expectEqualStrings("particles", cfg.effect);
     try std.testing.expectApproxEqAbs(@as(f32, 0.3), cfg.transition_duration, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), cfg.fade_in, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.15), cfg.cursor_smoothing, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), cfg.cursor_smoothing, 0.001);
     try std.testing.expectEqual(WorkspaceSlideOverride.auto, cfg.workspace_slide);
     try std.testing.expectEqual(@as(f32, 0), cfg.workspace_duration);
     try std.testing.expectEqual(@as(?workspace_slide.Spring, null), cfg.workspace_spring);

@@ -105,9 +105,7 @@ pub const WorkspaceSlide = struct {
             },
             .spring => |sp| blk: {
                 const r = springEval(sp, t);
-                if (@abs(1.0 - r.value) <= spring_value_epsilon and
-                    @abs(r.velocity) <= spring_velocity_epsilon)
-                {
+                if (springSettled(r.value, r.velocity)) {
                     self.active = false;
                     return null;
                 }
@@ -135,11 +133,17 @@ pub const WorkspaceSlide = struct {
 const spring_value_epsilon: f32 = 0.001;
 const spring_velocity_epsilon: f32 = 0.001;
 
+/// Whether a spring at (value, velocity) counts as finished, by
+/// hyprutils' own thresholds.
+pub fn springSettled(value: f32, velocity: f32) bool {
+    return @abs(1.0 - value) <= spring_value_epsilon and @abs(velocity) <= spring_velocity_epsilon;
+}
+
 /// Closed-form damped spring from value 0 (displacement −1) at rest
 /// toward 1, evaluated at elapsed time `t`. Mirrors hyprutils
 /// `advanceSpring`, which is the exact propagator — evaluating once from
 /// the initial conditions equals stepping frame by frame.
-fn springEval(sp: Spring, t: f32) struct { value: f32, velocity: f32 } {
+pub fn springEval(sp: Spring, t: f32) struct { value: f32, velocity: f32 } {
     const m = @max(sp.mass, 0.0001);
     const k = @max(sp.stiffness, 0.0001);
     const damping = @max(sp.damping, 0.0);
@@ -186,7 +190,7 @@ fn springEval(sp: Spring, t: f32) struct { value: f32, velocity: f32 } {
 /// y for a given x on a cubic bezier (0,0)-(X0,Y0)-(X1,Y1)-(1,1),
 /// CSS-timing-function style: Newton-solve the parameter for x, then
 /// evaluate y. `pts` is [X0, Y0, X1, Y1].
-fn bezierY(pts: [4]f32, x_in: f32) f32 {
+pub fn bezierY(pts: [4]f32, x_in: f32) f32 {
     const x = std.math.clamp(x_in, 0.0, 1.0);
     var u: f32 = x;
     for (0..8) |_| {

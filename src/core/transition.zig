@@ -39,8 +39,8 @@ pub const TransitionState = struct {
     transition_progress: f32 = 1.0, // 0 = just changed, 1 = settled
 
     // Smoothing factors (0 = instant, 1 = frozen)
-    cursor_smoothing: f32 = 0.15,
-    geometry_smoothing: f32 = 0.12,
+    cursor_smoothing: f32 = 0.0,
+    geometry_smoothing: f32 = 0.0,
 
     // Timing for frame-rate independent smoothing
     last_time: f64 = 0,
@@ -134,6 +134,7 @@ test "fadeIn ramps from 0 through the midpoint to 1" {
 }
 
 pub fn smoothAlpha(factor: f32, dt: f32) f32 {
+    if (factor <= 0) return 1.0; // off: track the target exactly
     const f = std.math.clamp(factor, 0.001, 0.999);
     const speed = -@log(f) * 30.0;
     return 1.0 - @exp(-speed * dt);

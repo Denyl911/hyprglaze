@@ -2,6 +2,7 @@ const std = @import("std");
 const posix = std.posix;
 const libc = @import("io_helper.zig").libc;
 const workspace_slide = @import("workspace_slide.zig");
+const window_anim = @import("window_anim.zig");
 
 const log = std.log.scoped(.hypr_ipc);
 
@@ -120,6 +121,12 @@ pub const HyprIpc = struct {
     }
 
     fn query(self: *const HyprIpc, command: []const u8, buf: []u8) ![]const u8 {
+        return self.queryTimeout(command, buf, null);
+    }
+
+    /// `query` with an optional send/receive timeout (microseconds), for
+    /// per-frame calls that must never stall the render loop.
+    fn queryTimeout(self: *const HyprIpc, command: []const u8, buf: []u8, timeout_us: ?u32) ![]const u8 {
         var addr: std.posix.sockaddr.un = .{ .path = undefined };
         @memset(&addr.path, 0);
         @memcpy(addr.path[0..self.socket_path_len], self.socket_path[0..self.socket_path_len]);
@@ -128,6 +135,11 @@ pub const HyprIpc = struct {
         if (sock_rc < 0) return error.SocketCreateFailed;
         const sock: i32 = sock_rc;
         defer _ = libc.close(sock);
+        if (timeout_us) |us| {
+            const tv = std.posix.timeval{ .sec = 0, .usec = @intCast(us) };
+            _ = std.c.setsockopt(sock, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &tv, @sizeOf(std.posix.timeval));
+            _ = std.c.setsockopt(sock, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &tv, @sizeOf(std.posix.timeval));
+        }
 
         if (libc.connect(sock, @ptrCast(&addr), @sizeOf(std.posix.sockaddr.un)) < 0) {
             return error.SocketConnectFailed;
@@ -156,6 +168,16 @@ pub const HyprIpc = struct {
         // turns into a confusing parse failure several frames later. Say so.
         if (total == buf.len) return error.ReplyTruncated;
         return buf[0..total];
+    }
+
+    /// The cursor, asked for directly. The watcher's `hg:cur` arrives on
+    /// its 16ms tick; this is the position right now (a ~60us round trip),
+    /// so the wallpaper can sample the pointer the moment it renders.
+    /// Times out after 4ms rather than holding up a frame.
+    pub fn cursorPos(self: *const HyprIpc) !CursorPos {
+        var buf: [128]u8 = undefined;
+        const reply = try self.queryTimeout("j/cursorpos", &buf, 4000);
+        return parseCursorPos(reply) orelse error.BadCursorReply;
     }
 
     /// Evaluate a Lua chunk in Hyprland's config Lua state. Requires the
@@ -237,6 +259,14 @@ pub const HyprIpc = struct {
         var buf: [16384]u8 = undefined;
         const response = try self.query("j/animations", &buf);
         return parseWorkspaceAnim(allocator, response);
+    }
+
+    /// Hyprland's effective window move/resize animation, mirrored by
+    /// window_anim.zig because the reported geometry is the goal.
+    pub fn windowAnim(self: *const HyprIpc, allocator: std.mem.Allocator) !window_anim.Anim {
+        var buf: [16384]u8 = undefined;
+        const response = try self.query("j/animations", &buf);
+        return parseWindowAnim(allocator, response);
     }
 
     /// The monitor to render on. `want` names an output exactly; when it is
@@ -344,6 +374,24 @@ fn monitorFromJson(mon: std.json.ObjectMap) !MonitorInfo {
     return result;
 }
 
+/// `{ "x": 2309, "y": 1112 }` → CursorPos, without an allocator.
+fn parseCursorPos(reply: []const u8) ?CursorPos {
+    return .{
+        .x = jsonIntField(reply, "\"x\"") orelse return null,
+        .y = jsonIntField(reply, "\"y\"") orelse return null,
+    };
+}
+
+fn jsonIntField(s: []const u8, key: []const u8) ?i32 {
+    const k = std.mem.indexOf(u8, s, key) orelse return null;
+    var i = k + key.len;
+    while (i < s.len and (s[i] == ' ' or s[i] == ':' or s[i] == '\t' or s[i] == '\n')) i += 1;
+    var j = i;
+    if (j < s.len and s[j] == '-') j += 1;
+    while (j < s.len and std.ascii.isDigit(s[j])) j += 1;
+    return std.fmt.parseInt(i32, s[i..j], 10) catch null;
+}
+
 /// Hyprland's built-in `default` bezier — last-resort easing when the
 /// configured curve can't be resolved from the reply.
 const default_bezier = [4]f32{ 0.0, 0.75, 0.15, 1.0 };
@@ -393,6 +441,43 @@ fn parseWorkspaceAnim(allocator: std.mem.Allocator, response: []const u8) !Works
             findBezier(beziers_v.array.items, "default") orelse default_bezier };
 
     return .{ .axis = axis, .duration = duration, .ease = ease };
+}
+
+/// Parse the `windowsMove` leaf out of a `j/animations` reply. Leaves that
+/// are not overridden report zeroed values and inherit from their parent:
+/// windowsMove -> windows -> global.
+fn parseWindowAnim(allocator: std.mem.Allocator, response: []const u8) !window_anim.Anim {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, response, .{}) catch
+        return error.BadAnimationsReply;
+    defer parsed.deinit();
+
+    if (parsed.value != .array or parsed.value.array.items.len < 2) return error.BadAnimationsReply;
+    const anims_v = parsed.value.array.items[0];
+    const beziers_v = parsed.value.array.items[1];
+    if (anims_v != .array or beziers_v != .array) return error.BadAnimationsReply;
+    const anims = anims_v.array.items;
+
+    var effective: ?std.json.ObjectMap = null;
+    for ([_][]const u8{ "windowsMove", "windows", "global" }) |name| {
+        const node = findAnim(anims, name) orelse continue;
+        if (jsonBool(node.get("overridden")) or std.mem.eql(u8, name, "global")) {
+            effective = node;
+            break;
+        }
+    }
+    const eff = effective orelse return error.BadAnimationsReply;
+
+    const speed = jsonF32(eff.get("speed")) orelse 0;
+    const bezier_name = jsonString(eff.get("bezier")) orelse "";
+    return .{
+        .enabled = jsonBool(eff.get("enabled")),
+        .duration = if (speed > 0) speed * 0.1 else 0.4,
+        .ease = if (std.mem.startsWith(u8, bezier_name, "spring:"))
+            .{ .spring = .{} }
+        else
+            .{ .cubic_bezier = findBezier(beziers_v.array.items, bezier_name) orelse
+                findBezier(beziers_v.array.items, "default") orelse default_bezier },
+    };
 }
 
 fn findAnim(items: []const std.json.Value, name: []const u8) ?std.json.ObjectMap {
@@ -494,6 +579,45 @@ test "parseWorkspaceAnim inherits from global when not overridden" {
     try std.testing.expectEqual(workspace_slide.Axis.horizontal, anim.axis);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), anim.duration, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.75), anim.ease.cubic_bezier[1], 0.001);
+}
+
+test "parseCursorPos reads hyprctl's cursorpos reply" {
+    const c = parseCursorPos("{\n    \"x\": 2309,\n    \"y\": -12\n}\n").?;
+    try std.testing.expectEqual(@as(i32, 2309), c.x);
+    try std.testing.expectEqual(@as(i32, -12), c.y);
+    try std.testing.expectEqual(@as(?CursorPos, null), parseCursorPos("{\"x\": 5}"));
+}
+
+test "parseWindowAnim inherits windowsMove from windows" {
+    // The live shape: windowsMove not overridden, windows on a spring.
+    const reply =
+        \\[[{"name":"global","overridden":true,"bezier":"default","enabled":true,"speed":10.0,"style":""},
+        \\  {"name":"windows","overridden":true,"bezier":"spring:springy","enabled":true,"speed":4.79,"style":""},
+        \\  {"name":"windowsMove","overridden":false,"bezier":"","enabled":true,"speed":0.0,"style":""}],
+        \\ [{"name":"default","X0":0.0,"Y0":0.75,"X1":0.15,"Y1":1.0}]]
+    ;
+    const anim = try parseWindowAnim(std.testing.allocator, reply);
+    try std.testing.expect(anim.enabled);
+    try std.testing.expect(anim.ease == .spring);
+}
+
+test "parseWindowAnim prefers an overridden windowsMove, else global" {
+    const own =
+        \\[[{"name":"windows","overridden":true,"bezier":"spring:x","enabled":true,"speed":4.0,"style":""},
+        \\  {"name":"windowsMove","overridden":true,"bezier":"easeOutQuint","enabled":true,"speed":3.0,"style":""}],
+        \\ [{"name":"easeOutQuint","X0":0.23,"Y0":1.0,"X1":0.32,"Y1":1.0}]]
+    ;
+    const a = try parseWindowAnim(std.testing.allocator, own);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), a.duration, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.23), a.ease.cubic_bezier[0], 0.001);
+
+    const off =
+        \\[[{"name":"global","overridden":true,"bezier":"default","enabled":false,"speed":10.0,"style":""},
+        \\  {"name":"windows","overridden":false,"bezier":"","enabled":true,"speed":0.0,"style":""}],
+        \\ [{"name":"default","X0":0.0,"Y0":0.75,"X1":0.15,"Y1":1.0}]]
+    ;
+    const b = try parseWindowAnim(std.testing.allocator, off);
+    try std.testing.expect(!b.enabled);
 }
 
 test "parseWorkspaceAnim fade or disabled means no slide axis" {

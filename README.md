@@ -114,11 +114,17 @@ duration = 0.25
 #                               # not expose spring parameters over IPC, so a
 #                               # custom hl.curve spring must be mirrored here)
 
+# Window moves and resizes replay Hyprland's own `windowsMove` animation
+# (Hyprland reports only where a window is going, so the curve is detected
+# and mirrored), and interactive drags are followed exactly. A spring curve
+# needs its parameters mirrored, as for workspaces:
+# window_spring = ""            # "mass,stiffness,dampening"
+
 [cursor]
 smoothing = 0.85
 
 [geometry]
-smoothing = 0.85
+smoothing = 0.0       # extra lag on top of the mirrored animation; 0 = none
 
 [particles]
 count = 60

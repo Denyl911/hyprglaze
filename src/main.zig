@@ -9,6 +9,7 @@ const palette_mod = @import("core/palette.zig");
 const transition = @import("core/transition.zig");
 const geometry = @import("core/geometry.zig");
 const workspace_slide = @import("core/workspace_slide.zig");
+const window_anim = @import("core/window_anim.zig");
 const config_mod = @import("core/config.zig");
 const watcher_mod = @import("core/watcher.zig");
 const hypr_events = @import("core/hypr_events.zig");
@@ -147,6 +148,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
         log.warn("workspace animation detection failed: {} — using defaults", .{err});
         break :blk null;
     };
+    // Likewise the window move animation: the watcher reports goal rects,
+    // and the daemon replays the compositor's curve toward them.
+    var detected_win_anim: ?window_anim.Anim = ipc.windowAnim(allocator) catch |err| blk: {
+        log.warn("window animation detection failed: {} — using defaults", .{err});
+        break :blk null;
+    };
 
     // Subscribe to Hyprland's event stream so focus / lifecycle / workspace
     // changes are instant rather than detected via the every-100ms poll.
@@ -231,6 +238,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // workspace switch (slides off-screen while the new set slides in).
     var slide = workspace_slide.WorkspaceSlide{};
     configureSlide(&slide, detected_anim, &cfg);
+    var win_anims = window_anim.Tracker{};
+    // Recent frame period. A frame drawn now reaches the screen on the
+    // compositor's next refresh, so window animations are sampled that far
+    // ahead to line up with the window as it will be displayed.
+    var frame_period: f64 = 1.0 / 60.0;
+    configureWindowAnim(&win_anims, detected_win_anim, &cfg);
     switch (slide.ease) {
         .spring => |sp| log.info("workspace slide: {s}, spring k={d:.1} c={d:.1} m={d:.1}", .{
             @tagName(slide.axis), sp.stiffness, sp.damping, sp.mass,
@@ -322,6 +335,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var closed_buf: [hypr_events.HyprEvents.closed_ring_len]u64 = undefined;
     var workspace_switches: u32 = 0;
     events.copySnapshot(&cached_snapshot);
+    // Seed the move-animation tracker, so a window's first move after
+    // startup animates rather than reading as a newly seen window.
+    noteWindowGoals(&win_anims, &cached_snapshot, 0);
     slide.seed(cached_snapshot.workspace_id);
 
     const initial_cursor = events.cursorPos();
@@ -549,6 +565,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     log.warn("reload failed: {}", .{err});
                 };
                 configureSlide(&slide, detected_anim, &cfg);
+                configureWindowAnim(&win_anims, detected_win_anim, &cfg);
             }
         }
 
@@ -562,9 +579,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // sin/cos, which are periodic.
             const time: f32 = @floatCast(@mod(time_f64, 10_000.0));
 
-            // Cursor arrives as push (`hg:cur` events) — reading the
-            // atomics is free, so sample every frame.
-            const cursor = events.cursorPos();
+            // Sample the pointer as this frame renders: asked of Hyprland
+            // directly, falling back to the watcher's last `hg:cur` push
+            // (16ms tick) if the query fails.
+            const cursor = ipc.cursorPos() catch events.cursorPos();
             cached_cursor = geometry.toGlPoint(
                 cursor.x,
                 cursor.y,
@@ -608,6 +626,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     // The reload may have changed the workspace animation.
                     detected_anim = ipc.workspaceAnim(allocator) catch detected_anim;
                     configureSlide(&slide, detected_anim, &cfg);
+                    detected_win_anim = ipc.windowAnim(allocator) catch detected_win_anim;
+                    configureWindowAnim(&win_anims, detected_win_anim, &cfg);
                 }
             }
 
@@ -624,6 +644,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     last_snapshot_gen = gen;
                     prev_snapshot = cached_snapshot;
                     events.copySnapshot(&cached_snapshot);
+                    noteWindowGoals(&win_anims, &cached_snapshot, time_f64);
                     // Workspace switch? The strip below rebases around
                     // the new active workspace (every rel shifts by one),
                     // and the camera cancels the resulting jump. The set
@@ -686,13 +707,38 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // While sliding, keep iWindow tracking the focused window's
             // slid-in position instead of pre-snapping to where it will
             // come to rest (focus always lives on the active workspace).
+            // A frame drawn now is shown on the compositor's next refresh:
+            // sample window animations for that moment.
+            if (dt > 0 and dt < 0.1) frame_period += (@as(f64, dt) - frame_period) * 0.1;
+            const present_time = time_f64 + frame_period;
+
             var raw_focus_win = cached_raw_win;
+            {
+                const d = animOffsetGl(&win_anims, cached_win_address, present_time, surf_scale);
+                raw_focus_win.x += d.x;
+                raw_focus_win.y += d.y;
+                raw_focus_win.w += d.w;
+                raw_focus_win.h += d.h;
+            }
             if (camera) |cam| {
                 applyOffset(&raw_focus_win.x, &raw_focus_win.y, slide.axis, cam);
             }
             trans.update(time_f64, raw_focus_win, raw_cursor, cached_win_address);
 
-            // Smooth all window positions toward targets
+            // Where each window will be on screen when this frame is shown:
+            // its goal plus the part of Hyprland's move animation still to
+            // play at present_time.
+            var anim_targets: [hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect = undefined;
+            for (0..target_window_count) |i| {
+                anim_targets[i] = target_windows[i];
+                const d = animOffsetGl(&win_anims, target_windows[i].address, present_time, surf_scale);
+                anim_targets[i].x += d.x;
+                anim_targets[i].y += d.y;
+                anim_targets[i].w += d.w;
+                anim_targets[i].h += d.h;
+            }
+
+            // Optional extra smoothing toward those (off by default)
             const win_alpha = transition.smoothAlpha(cfg.geometry_smoothing, dt);
 
             if (camera) |cam| {
@@ -700,14 +746,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 // their rel offsets) shifts by the camera. Positions are
                 // analytic — per-frame smoothing is bypassed.
                 for (0..target_window_count) |i| {
-                    cached_windows[i] = target_windows[i];
+                    cached_windows[i] = anim_targets[i];
                     applyOffset(&cached_windows[i].x, &cached_windows[i].y, slide.axis, cam);
                 }
                 cached_window_count = target_window_count;
             } else if (target_window_count != cached_window_count or force_snap) {
                 // Window count changed or a workspace boundary without a
                 // slide — snap all
-                for (0..target_window_count) |i| cached_windows[i] = target_windows[i];
+                for (0..target_window_count) |i| cached_windows[i] = anim_targets[i];
                 cached_window_count = target_window_count;
             } else {
                 // Same count — smooth each cached window toward the
@@ -723,12 +769,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 var all_matched = true;
 
                 match: for (0..target_window_count) |ti| {
-                    const addr = target_windows[ti].address;
+                    const addr = anim_targets[ti].address;
                     if (addr != 0) {
                         for (0..cached_window_count) |ci| {
                             if (!used[ci] and cached_windows[ci].address == addr) {
                                 used[ci] = true;
-                                matched_targets[ci] = target_windows[ti];
+                                matched_targets[ci] = anim_targets[ti];
                                 continue :match;
                             }
                         }
@@ -746,7 +792,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         cached_windows[i].address = matched_targets[i].address;
                     }
                 } else {
-                    for (0..target_window_count) |i| cached_windows[i] = target_windows[i];
+                    for (0..target_window_count) |i| cached_windows[i] = anim_targets[i];
                     cached_window_count = target_window_count;
                 }
             }
@@ -1080,6 +1126,42 @@ fn configureSlide(
     if (cfg.workspace_spring) |sp| slide.ease = .{ .spring = sp };
 }
 
+fn configureWindowAnim(
+    tracker: *window_anim.Tracker,
+    detected: ?window_anim.Anim,
+    cfg: *const config_mod.Config,
+) void {
+    tracker.anim = detected orelse .{};
+    if (cfg.window_spring) |sp| {
+        if (tracker.anim.ease == .spring) tracker.anim.ease = .{ .spring = sp };
+    }
+}
+
+/// Feed every strip window's goal rect (layout space, as reported) to the
+/// move-animation tracker.
+fn noteWindowGoals(tracker: *window_anim.Tracker, snap: *const hypr.VisibleWindows, time: f64) void {
+    var addrs: [hypr.max_visible_windows]u64 = undefined;
+    var goals: [hypr.max_visible_windows]window_anim.Rect = undefined;
+    for (snap.windows[0..snap.count], 0..) |vw, i| {
+        addrs[i] = vw.address;
+        goals[i] = .{ @floatFromInt(vw.x), @floatFromInt(vw.y), @floatFromInt(vw.w), @floatFromInt(vw.h) };
+    }
+    tracker.noteGoals(addrs[0..snap.count], goals[0..snap.count], time);
+}
+
+/// A window's remaining animation (shown - goal) converted from layout
+/// space to a GL-space rect delta. toGl is affine per component, so the
+/// monitor origin cancels; y is flipped about the rect's bottom edge.
+fn animOffsetGl(tracker: *window_anim.Tracker, addr: u64, time: f64, scale: f32) geometry.Rect {
+    const o = tracker.offset(addr, time);
+    return .{
+        .x = o[0] * scale,
+        .y = -(o[1] + o[3]) * scale,
+        .w = o[2] * scale,
+        .h = o[3] * scale,
+    };
+}
+
 /// Apply a slide offset to a rect position in GL space. Offsets are in
 /// layout space (y down); the GL y-axis points up, so vertical offsets
 /// flip sign.
@@ -1274,11 +1356,12 @@ fn loadConfig(allocator: std.mem.Allocator, cli: *const CliArgs) !config_mod.Con
                 .output_wait_set = false,
                 .transition_duration = 0.3,
                 .fade_in = 1.0,
-                .cursor_smoothing = 0.15,
-                .geometry_smoothing = 0.12,
+                .cursor_smoothing = 0.0,
+                .geometry_smoothing = 0.0,
                 .workspace_slide = .auto,
                 .workspace_duration = 0,
                 .workspace_spring = null,
+                .window_spring = null,
                 .config_path = try allocator.dupe(u8, ""),
             };
         };
