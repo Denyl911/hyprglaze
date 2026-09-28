@@ -8,4 +8,5 @@ test {
     _ = @import("core/hypr.zig");
     _ = @import("core/workspace_slide.zig");
     _ = @import("core/window_anim.zig");
+    _ = @import("effects/particles/system.zig");
 }

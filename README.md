@@ -23,7 +23,7 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 
 | Effect | Description |
 |--------|-------------|
-| `particles` | Verlet physics particles with tracer trails, window collision, focused window gravity |
+| `particles` | Balls in a substepped XPBD physics sim: they fall toward the focused window and settle against its frame, moving windows bat them, hard hits pop |
 | `windowglow` | Subtle accent glow around focused window, surface tint on unfocused |
 | `cellbloom` | Voronoi cells shaped by window boundaries and cursor, animated drift points |
 | `concentric` | SDF concentric rings radiating from window edges, cursor interaction |
@@ -127,9 +127,9 @@ smoothing = 0.85
 smoothing = 0.0       # extra lag on top of the mirrored animation; 0 = none
 
 [particles]
-count = 60
-damping = 0.999
-pop_threshold = 50
+count = 60            # balls (max 150)
+damping = 0.999       # per-1/30s velocity retention (air drag)
+pop_threshold = 50    # ball-ball impact speed that bursts a ball, px per 1/30s
 
 [buddy]
 scale = 2.0
