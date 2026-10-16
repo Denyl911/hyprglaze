@@ -199,7 +199,6 @@ pub const Context = struct {
     // clock anchored to real music across passages of different energy.
     bpm_est: f32 = 120.0,
     beat_phase_total: f64 = 0,
-    beat_phase: f32 = 0.0,
     last_beat_now: f64 = -1.0,
 
     /// Cached uniform locations — resolved on first upload, re-resolved on
@@ -212,7 +211,6 @@ pub const Context = struct {
     loc_beat: c.GLint = -1,
     loc_bass: c.GLint = -1,
     loc_treble: c.GLint = -1,
-    loc_beat_phase: c.GLint = -1,
     loc_flash: c.GLint = -1,
     loc_ghost_start: c.GLint = -1,
 
@@ -478,7 +476,6 @@ pub const Context = struct {
         // Fractional phases for crossing detection.
         const ppf: f32 = @floatCast(prev_phase_total - @floor(prev_phase_total));
         const cpf: f32 = @floatCast(self.beat_phase_total - @floor(self.beat_phase_total));
-        self.beat_phase = cpf;
 
         // Half-beat "and": 8th-note syncopation.
         const half_crossed = ppf < 0.5 and cpf >= 0.5;
@@ -745,7 +742,6 @@ pub const Context = struct {
             self.loc_beat = c.glGetUniformLocation(prog.program, "iBeat");
             self.loc_bass = c.glGetUniformLocation(prog.program, "iBass");
             self.loc_treble = c.glGetUniformLocation(prog.program, "iTreble");
-            self.loc_beat_phase = c.glGetUniformLocation(prog.program, "iBeatPhase");
             self.loc_flash = c.glGetUniformLocation(prog.program, "iFlash");
             self.loc_ghost_start = c.glGetUniformLocation(prog.program, "iGhostStart");
         }
@@ -768,7 +764,6 @@ pub const Context = struct {
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.an.beat);
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.an.bass);
         if (self.loc_treble >= 0) c.glUniform1f(self.loc_treble, self.an.treble);
-        if (self.loc_beat_phase >= 0) c.glUniform1f(self.loc_beat_phase, self.beat_phase);
         if (self.loc_flash >= 0) c.glUniform1f(self.loc_flash, self.flash);
         if (self.loc_ghost_start >= 0) c.glUniform1i(self.loc_ghost_start, @intCast(self.ghost_start_idx));
     }

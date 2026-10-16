@@ -101,7 +101,6 @@ const max_contacts = 4096;
 // Contact persistence, one bit per (ball, obstacle) and (ball, ball),
 // double-buffered across substeps. Obstacles: the 4 screen walls, then
 // colliders by index.
-const obstacle_bits = 4 + max_colliders;
 const pair_words = (max_balls + 63) / 64;
 const Touching = struct {
     obstacle: [max_balls]u64 = [_]u64{0} ** max_balls,

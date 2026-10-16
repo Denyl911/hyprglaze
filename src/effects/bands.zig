@@ -56,7 +56,6 @@ pub const Splitter = struct {
     energy: f32 = 0,
 
     // Beat detection: spectral flux (energy derivative) based.
-    bass_instant: f32 = 0,
     bass_smooth: f32 = 0, // slow-moving average
     bass_prev: f32 = 0, // previous frame instant
     flux: f32 = 0, // positive energy derivative
@@ -74,12 +73,11 @@ pub const Splitter = struct {
             self.bands[3] + self.bands[4] + self.bands[5]) / 6.0;
 
         // Beat detection: spectral flux (energy derivative)
-        self.bass_instant = self.bass;
         self.bass_smooth += (self.bass - self.bass_smooth) * @min(1.0, 0.8 * dt);
 
         // Spectral flux: only count positive energy changes (onsets, not decays)
-        const flux_raw = @max(0.0, self.bass_instant - self.bass_prev);
-        self.bass_prev = self.bass_instant;
+        const flux_raw = @max(0.0, self.bass - self.bass_prev);
+        self.bass_prev = self.bass;
         self.flux = flux_raw;
         self.flux_avg += (flux_raw - self.flux_avg) * @min(1.0, 1.5 * dt);
 
@@ -87,7 +85,7 @@ pub const Splitter = struct {
         // Higher threshold + longer cooldown to avoid false triggers
         self.beat_cooldown -= dt;
         var beat_hit = false;
-        if (self.flux > self.flux_avg * 3.0 + 0.03 and self.beat_cooldown <= 0 and self.bass_instant > self.bass_smooth * 1.5) {
+        if (self.flux > self.flux_avg * 3.0 + 0.03 and self.beat_cooldown <= 0 and self.bass > self.bass_smooth * 1.5) {
             self.beat = 1.0;
             self.beat_cooldown = 0.25;
             beat_hit = true;

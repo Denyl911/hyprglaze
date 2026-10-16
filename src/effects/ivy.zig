@@ -325,7 +325,6 @@ pub const Context = struct {
     loc_bass: c.GLint = -1,
     loc_treble: c.GLint = -1,
     loc_beat: c.GLint = -1,
-    loc_energy: c.GLint = -1,
     loc_bright: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
@@ -1410,7 +1409,6 @@ pub const Context = struct {
             self.loc_bass = c.glGetUniformLocation(prog.program, "iBass");
             self.loc_treble = c.glGetUniformLocation(prog.program, "iTreble");
             self.loc_beat = c.glGetUniformLocation(prog.program, "iBeat");
-            self.loc_energy = c.glGetUniformLocation(prog.program, "iEnergy");
             self.loc_bright = c.glGetUniformLocation(prog.program, "iBright");
         }
 
@@ -1438,7 +1436,6 @@ pub const Context = struct {
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
         if (self.loc_treble >= 0) c.glUniform1f(self.loc_treble, (self.an.smooth[4] + self.an.smooth[5]) * 0.5);
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);
-        if (self.loc_energy >= 0) c.glUniform1f(self.loc_energy, self.an.energy_ema);
         if (self.loc_bright >= 0) c.glUniform1f(self.loc_bright, self.brightness);
     }
 

@@ -2,7 +2,6 @@
 precision highp float;
 
 uniform vec3 iResolution;
-uniform float iMoireTime;
 uniform vec4 iMouse;
 uniform vec4 iWindows[32];
 uniform int iWindowCount;
@@ -19,7 +18,6 @@ uniform vec3 iPaletteFg;
 // (x, y, size, color_idx + 16*age). Age 0 is the head; 1..4 are trail samples.
 uniform vec4 iParticles[300];
 uniform int iParticleCount;
-uniform float iBass;
 // 1.0 = wave-packet interference fuzz (default), 0.0 = comet dots + trails.
 uniform float iFuzz;
 // Outward-ripple phase clock, accumulated CPU-side; speeds up with energy.

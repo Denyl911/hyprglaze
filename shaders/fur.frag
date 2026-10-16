@@ -19,7 +19,6 @@ uniform vec3 iPaletteFg;
 // Music. Zero in silence (or with music = false) except the drift clock,
 // which keeps turning so the coat always has a slow current in it.
 uniform float iFurFlow;     // comb-drift clock, energy-paced
-uniform float iFurBands[6]; // smoothed AGC'd bands, low to high
 uniform float iFurBass;
 uniform float iFurBeat;     // kick envelope, ~200ms decay
 uniform float iFurCell;     // follicle spacing in px

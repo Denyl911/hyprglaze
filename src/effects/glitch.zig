@@ -38,7 +38,6 @@ pub const Context = struct {
         if (beat_hit) {
             // New seed on beat — drives block/jitter randomness
             self.glitch_seed = @mod(@sin(clock.phase(self.flight_time, 12345.6789)) * 43758.5453, 1.0);
-            if (self.glitch_seed < 0) self.glitch_seed += 1.0;
         }
 
         self.flight_time += dt;

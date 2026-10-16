@@ -38,7 +38,6 @@ pub const Context = struct {
 
     cached_program: c.GLuint = 0,
     loc_flow: c.GLint = -1,
-    loc_bands: c.GLint = -1,
     loc_bass: c.GLint = -1,
     loc_beat: c.GLint = -1,
     loc_cell: c.GLint = -1,
@@ -73,7 +72,6 @@ pub const Context = struct {
         if (self.cached_program != prog.program) {
             self.cached_program = prog.program;
             self.loc_flow = c.glGetUniformLocation(prog.program, "iFurFlow");
-            self.loc_bands = c.glGetUniformLocation(prog.program, "iFurBands[0]");
             self.loc_bass = c.glGetUniformLocation(prog.program, "iFurBass");
             self.loc_beat = c.glGetUniformLocation(prog.program, "iFurBeat");
             self.loc_cell = c.glGetUniformLocation(prog.program, "iFurCell");
@@ -81,7 +79,6 @@ pub const Context = struct {
             self.loc_bright = c.glGetUniformLocation(prog.program, "iFurBright");
         }
         if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
-        if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.an.smooth[0]);
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);
         if (self.loc_cell >= 0) c.glUniform1f(self.loc_cell, self.cell);

@@ -131,8 +131,6 @@ pub const Bands = struct {
     bands: [6]f32 = [_]f32{0} ** 6,
     smooth: [6]f32 = [_]f32{0} ** 6,
     peak: [6]f32 = [_]f32{0} ** 6,
-    bass: f32 = 0,
-    treble: f32 = 0,
     energy_ema: f32 = 0,
 
     pub fn update(self: *Bands, mags: *const [n_bins]f32, dt: f32) void {
@@ -147,8 +145,6 @@ pub const Bands = struct {
             self.bands[b] += (raw - self.bands[b]) * (if (raw > self.bands[b]) attack else decay);
             self.smooth[b] += (self.bands[b] - self.smooth[b]) * @min(1.0, 8.0 * dt);
         }
-        self.bass = (self.bands[0] + self.bands[1]) * 0.5;
-        self.treble = (self.bands[4] + self.bands[5]) * 0.5;
         const energy = (self.bands[0] + self.bands[1] + self.bands[2] +
             self.bands[3] + self.bands[4] + self.bands[5]) / 6.0;
         self.energy_ema += (energy - self.energy_ema) * @min(1.0, 2.0 * dt);

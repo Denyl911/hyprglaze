@@ -79,7 +79,6 @@ pub const Context = struct {
 
     width: f32,
     height: f32,
-    now: f64 = 0,
 
     bodies: [max_bodies]Body = [_]Body{.{}} ** max_bodies,
     count: u32 = max_bodies,
@@ -119,8 +118,6 @@ pub const Context = struct {
     grating: f32 = 4.0,
 
     cached_program: c.GLuint = 0,
-    loc_time: c.GLint = -1,
-    loc_bass: c.GLint = -1,
     loc_fuzz: c.GLint = -1,
     loc_ringfreq: c.GLint = -1,
     loc_grating: c.GLint = -1,
@@ -218,7 +215,6 @@ pub const Context = struct {
 
     pub fn update(self: *Context, state: effects.FrameState) void {
         const dt = std.math.clamp(state.dt, 0.0, 0.033);
-        self.now += dt;
 
         // Bass envelope — drives per-body size breathing in upload.
         const wave = self.audio.getWaveform();
@@ -361,8 +357,6 @@ pub const Context = struct {
 
         if (self.cached_program != prog.program) {
             self.cached_program = prog.program;
-            self.loc_time = c.glGetUniformLocation(prog.program, "iMoireTime");
-            self.loc_bass = c.glGetUniformLocation(prog.program, "iBass");
             self.loc_fuzz = c.glGetUniformLocation(prog.program, "iFuzz");
             self.loc_ringfreq = c.glGetUniformLocation(prog.program, "iRingFreq");
             self.loc_grating = c.glGetUniformLocation(prog.program, "iGrating");
@@ -408,10 +402,6 @@ pub const Context = struct {
             c.glUniform1i(prog.i_particle_count, @intCast(slot));
         }
 
-        // Effect-local time (fire.zig pattern) — keeps shader noise/twinkle
-        // coordinates small so f32 precision holds over long sessions.
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.bass);
         if (self.loc_fuzz >= 0) c.glUniform1f(self.loc_fuzz, if (self.fuzz) 1.0 else 0.0);
         if (self.loc_ringfreq >= 0) c.glUniform1f(self.loc_ringfreq, 2.0 * std.math.pi / self.wavelength);
         if (self.loc_grating >= 0) c.glUniform1f(self.loc_grating, self.grating);

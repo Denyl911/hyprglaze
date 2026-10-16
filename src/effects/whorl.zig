@@ -193,6 +193,7 @@ pub const Context = struct {
         @memset(old_wall, 0);
 
         const sim_hz = std.math.clamp(params.getFloat("sim_hz", 14.0), 1.0, 60.0);
+        const trail = std.math.clamp(params.getFloat("trail", 2.5), 1.0, 20.0);
 
         var audio: ?*audio_mod.AudioCapture = null;
         if (params.getBool("music", true)) audio = try audio_mod.spawn(allocator, params);
@@ -207,8 +208,8 @@ pub const Context = struct {
             .n_states = n_states,
             .threshold = @intCast(std.math.clamp(params.getInt("threshold", 3), 1, 12)),
             .range = std.math.clamp(params.getInt("range", 2), 1, 3),
-            .trail_base = std.math.clamp(params.getFloat("trail", 2.5), 1.0, 20.0),
-            .fresh_decay = @intFromFloat(255.0 / std.math.clamp(params.getFloat("trail", 2.5), 1.0, 20.0)),
+            .trail_base = trail,
+            .fresh_decay = @intFromFloat(255.0 / trail),
             .sim_dt = 1.0 / sim_hz,
             .warmup = @intCast(std.math.clamp(params.getInt("warmup", 140), 0, 2000)),
             .stir = params.getBool("stir", false),

@@ -24,7 +24,6 @@ uniform int iSegCount;
 uniform float iBeat;
 uniform float iBass;
 uniform float iTreble;
-uniform float iBeatPhase;
 uniform float iFlash;
 uniform int iGhostStart;   // segments at/after this index are afterglow embers
 

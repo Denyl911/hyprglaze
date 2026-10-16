@@ -30,7 +30,6 @@ pub const Context = struct {
         var slot: u32 = 0;
         var i: u32 = 0;
         while (i < 256) : (i += 4) {
-            if (slot >= 300) break;
             if (prog.i_particles[slot] >= 0)
                 c.glUniform4f(prog.i_particles[slot],
                     wave[i], wave[i + 1], wave[i + 2], wave[i + 3]);

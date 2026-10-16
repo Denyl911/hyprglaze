@@ -28,7 +28,6 @@ uniform vec4 iFall[40];    // falling leaves (x, y, angle, size)
 uniform float iBass;
 uniform float iTreble;
 uniform float iBeat;
-uniform float iEnergy;
 uniform float iBright;
 
 out vec4 fragColor;

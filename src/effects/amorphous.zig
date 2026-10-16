@@ -92,7 +92,6 @@ pub const Context = struct {
     balls: [total_balls]Ball = undefined,
 
     cached_program: c.GLuint = 0,
-    loc_size: c.GLint = -1,
     loc_front: c.GLint = -1,
     loc_back: c.GLint = -1,
     loc_opacity: c.GLint = -1,

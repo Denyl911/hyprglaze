@@ -51,7 +51,7 @@ pub const Context = struct {
 
         // Pack bands + beat into iParticles[0] and [1]
         // [0] = (band0, band1, band2, band3)
-        // [1] = (band4, band5, beat, bass)
+        // [1] = (band4, band5, beat, flight_time)
         if (prog.i_particles[0] >= 0)
             c.glUniform4f(prog.i_particles[0],
                 self.an.bands[0], self.an.bands[1], self.an.bands[2], self.an.bands[3]);

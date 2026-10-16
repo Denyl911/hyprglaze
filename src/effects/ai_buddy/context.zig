@@ -599,7 +599,6 @@ pub const Context = struct {
         // Emote particles: slots [9..14] = (type, x, y, alpha)
         for (0..max_emotes) |ei| {
             const slot = 9 + ei;
-            if (slot >= 300) break;
             const e = self.emotes[ei];
             if (e.life > 0 and e.etype != .none) {
                 if (prog.i_particles[slot] >= 0)

@@ -3,7 +3,6 @@ const iohelp = @import("../../core/io_helper.zig");
 const shader_mod = @import("../../core/shader.zig");
 const texture_mod = @import("../../core/texture.zig");
 const config_mod = @import("../../core/config.zig");
-const transition_mod = @import("../../core/transition.zig");
 const effects = @import("../../effects.zig");
 const sprite = @import("sprite.zig");
 
