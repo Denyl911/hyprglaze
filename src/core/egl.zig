@@ -10,7 +10,6 @@ pub const EglState = struct {
     display: c.EGLDisplay,
     context: c.EGLContext,
     surface: c.EGLSurface,
-    config: c.EGLConfig,
 
     pub fn init(wl_display: *anyopaque, wl_egl_window: *anyopaque) !EglState {
         const display = c.eglGetDisplay(@ptrCast(wl_display));
@@ -75,7 +74,6 @@ pub const EglState = struct {
             .display = display,
             .context = context,
             .surface = surface,
-            .config = config,
         };
     }
 

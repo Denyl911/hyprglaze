@@ -151,7 +151,9 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8, source_path: []cons
         }
         return err;
     };
-    // Don't deinit result — we keep the arena alive for effect params
+    // Don't deinit result on success — we keep the arena alive for effect
+    // params (Config.raw_arena owns it from here).
+    errdefer result.deinit();
 
     const t = result.value;
 

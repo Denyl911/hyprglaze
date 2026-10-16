@@ -16,7 +16,9 @@ const log = std.log.scoped(.wayland);
 /// and has nowhere to report an allocation failure — and because it keeps
 /// `deinit` heap-free, as it has always been.
 const max_outputs = 16;
-const max_output_name = 32;
+// Matches the 64 bytes hypr.zig and HyprEvents keep, so a long name is
+// never truncated here and then compared against an untruncated one.
+const max_output_name = 64;
 
 const OutputEntry = struct {
     proxy: *c.wl_output,
@@ -317,12 +319,8 @@ pub const WaylandState = struct {
         self.frame_done = false;
     }
 
-    pub fn dispatch(self: *WaylandState) !void {
-        if (c.wl_display_dispatch(self.display) == -1) return error.DispatchFailed;
-    }
-
     /// Dispatch with a timeout, for the waiting state where no surface
-    /// exists and `dispatch` would block until the compositor happened to
+    /// exists and a plain wl_display_dispatch would block until the compositor happened to
     /// say something. libwayland's read protocol: prepare, flush, poll the
     /// fd, then read (or cancel) and dispatch what arrived. Returns whether
     /// any events arrived. `timeout_ms` is bounded by the caller's need to
@@ -345,13 +343,6 @@ pub const WaylandState = struct {
         }
         if (c.wl_display_dispatch_pending(self.display) == -1) return error.DispatchFailed;
         return ready > 0;
-    }
-
-    /// True once the pinned output has gone away. Losing it does not always
-    /// close the layer surface, so this is what the main loop watches to know
-    /// it has nothing left to draw on.
-    pub fn targetGone(self: *const WaylandState) bool {
-        return self.target_gone;
     }
 
     /// Tear down Wayland-side resources and reconnect to the compositor.

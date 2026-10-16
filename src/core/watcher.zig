@@ -61,10 +61,8 @@ pub const FileWatcher = struct {
     pub fn poll(self: *FileWatcher) bool {
         var buf: [4096]u8 align(@alignOf(linux.inotify_event)) = undefined;
 
-        const n = posix.read(self.inotify_fd, &buf) catch |err| switch (err) {
-            error.WouldBlock => return false,
-            else => return false,
-        };
+        // WouldBlock (nothing changed) and real errors both mean no reload.
+        const n = posix.read(self.inotify_fd, &buf) catch return false;
 
         if (n == 0) return false;
 

@@ -387,7 +387,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // Initial render: time 0 into the fade is the bare background.
     effect.upload(&shader_prog);
     try wl.requestFrame();
-    drawFrame(&shader_prog, &egl_state, surf_w, surf_h, 0.0, &trans, &cached_windows, cached_window_count, transition.fadeIn(0.0, cfg.fade_in), fadeBg(pal));
+    drawFrame(&shader_prog, surf_w, surf_h, 0.0, &trans, &cached_windows, cached_window_count, transition.fadeIn(0.0, cfg.fade_in), fadeBg(pal));
     egl_state.swapBuffers() catch |err| log.warn("initial swapBuffers error: {}", .{err});
 
     // Bounded retries for a failed effect resize; see the resize block.
@@ -826,7 +826,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             effect.upload(&shader_prog);
 
             const fade = transition.fadeIn(time_f64 - fade_start, cfg.fade_in);
-            drawFrame(&shader_prog, &egl_state, surf_w, surf_h, time, &trans, &cached_windows, cached_window_count, fade, fadeBg(pal));
+            drawFrame(&shader_prog, surf_w, surf_h, time, &trans, &cached_windows, cached_window_count, fade, fadeBg(pal));
             try wl.requestFrame();
             if (egl_state.swapBuffers()) |_| {
                 swap_failures = 0;
@@ -882,7 +882,7 @@ fn primeSurface(
 ) !void {
     effect.upload(shader_prog);
     try wl.requestFrame();
-    drawFrame(shader_prog, egl_state, surf_w, surf_h, 0.0, trans, windows, window_count, transition.fadeIn(0.0, cfg.fade_in), fadeBg(pal));
+    drawFrame(shader_prog, surf_w, surf_h, 0.0, trans, windows, window_count, transition.fadeIn(0.0, cfg.fade_in), fadeBg(pal));
     egl_state.swapBuffers() catch |err| log.warn("first swapBuffers on the rebuilt surface failed: {}", .{err});
 }
 
@@ -1040,7 +1040,6 @@ fn recreateGraphics(
 
 fn drawFrame(
     prog: *shader_mod.ShaderProgram,
-    _: *egl_mod.EglState,
     w: f32,
     h: f32,
     time: f32,
@@ -1205,14 +1204,6 @@ fn installWatcher(ipc: *const hypr.HyprIpc, events: *hypr_events.HyprEvents) !vo
     log.info("lua watcher installed", .{});
 }
 
-/// Derive window rects + metadata from the latest watcher snapshot,
-/// looking up the focused window by `focused_address` (the address comes
-/// from the event stream, or a one-time bootstrap query at startup).
-/// Strip windows (rel ±1) are parked one `span` off-screen along the
-/// slide axis; with sliding disabled they are dropped entirely.
-///
-/// `win_address` in the result is 0 when the focused window is not present
-/// in the visible list (e.g. focus is on another monitor's workspace).
 /// Copy the active-workspace windows of `from` into `out`, parked at
 /// `rel = -dir`: the set the camera will slide out. Same monitor, same
 /// origin, so the coordinates carry over untouched.
@@ -1260,11 +1251,17 @@ const StripBuilder = struct {
     }
 };
 
-/// Build the window strip from a snapshot. With `outgoing` set (a slide is
-/// running), the snapshot's `skip_rel` bucket is replaced by it: the
-/// workspace being left slides out, not whichever workspace happens to
-/// have the nearest id. Emission order is active, outgoing, far side, so
-/// the cap drops what is off-screen anyway.
+/// Build the window strip from a snapshot, looking up the focused window
+/// by `focused_address` (from the event stream, or a one-time bootstrap
+/// query at startup). Strip windows (rel ±1) are parked one `span`
+/// off-screen along the slide axis; with sliding disabled they are dropped.
+/// With `outgoing` set (a slide is running), the snapshot's `skip_rel`
+/// bucket is replaced by it: the workspace being left slides out, not
+/// whichever workspace happens to have the nearest id. Emission order is
+/// active, outgoing, far side, so the cap drops what is off-screen anyway.
+///
+/// `win_address` in the result is 0 when the focused window is not present
+/// in the visible list (e.g. focus is on another monitor's workspace).
 fn deriveRawState(
     visible: *const hypr.VisibleWindows,
     surf_h: f32,
@@ -1332,62 +1329,43 @@ fn deriveRawState(
 }
 
 fn loadConfig(allocator: std.mem.Allocator, cli: *const CliArgs) !config_mod.Config {
-    var cfg: config_mod.Config = undefined;
-
-    if (cli.config_path) |path| {
-        cfg = try config_mod.load(allocator, path);
-    } else {
-        const default_path = config_mod.resolveConfigPath(allocator) catch {
-            const effect_dup = try allocator.dupe(u8, cli.effect_name orelse "particles");
-            errdefer allocator.free(effect_dup);
-            const shader_dup = try allocator.dupe(u8, cli.shader_path orelse "");
-            errdefer allocator.free(shader_dup);
-            const theme_dup = if (cli.theme_name) |t| try allocator.dupe(u8, t) else null;
-            errdefer if (theme_dup) |td| allocator.free(td);
-            const output_dup = if (cli.output) |o| try allocator.dupe(u8, o) else null;
-            errdefer if (output_dup) |od| allocator.free(od);
-            return .{
-                .effect = effect_dup,
-                .shader = shader_dup,
-                .theme = theme_dup,
-                .output = output_dup,
-                .output_wait = config_mod.defaultOutputWait(cli.output),
-                .output_wait_set = false,
-                .transition_duration = 0.3,
-                .fade_in = 1.0,
-                .cursor_smoothing = 0.0,
-                .geometry_smoothing = 0.0,
-                .workspace_slide = .auto,
-                .workspace_duration = 0,
-                .workspace_spring = null,
-                .window_spring = null,
-                .config_path = try allocator.dupe(u8, ""),
-            };
-        };
+    const cfg = if (cli.config_path) |path| try config_mod.load(allocator, path) else blk: {
+        // No config file: the same defaults an empty file gets.
+        const default_path = config_mod.resolveConfigPath(allocator) catch
+            break :blk try config_mod.parse(allocator, "", "");
         defer allocator.free(default_path);
-        cfg = try config_mod.load(allocator, default_path);
-    }
+        break :blk try config_mod.load(allocator, default_path);
+    };
+    return applyCliOverrides(allocator, cfg, cli);
+}
 
-    // CLI overrides
+/// Each override is duplicated before the old value is freed, so a failed
+/// allocation leaves `cfg` whole for the errdefer to release.
+fn applyCliOverrides(allocator: std.mem.Allocator, loaded: config_mod.Config, cli: *const CliArgs) !config_mod.Config {
+    var cfg = loaded;
+    errdefer config_mod.deinit(&cfg, allocator);
     if (cli.effect_name) |e| {
+        const v = try allocator.dupe(u8, e);
         allocator.free(cfg.effect);
-        cfg.effect = try allocator.dupe(u8, e);
+        cfg.effect = v;
     }
     if (cli.shader_path) |sp| {
-        if (cfg.shader.len > 0) allocator.free(cfg.shader);
-        cfg.shader = try allocator.dupe(u8, sp);
+        const v = try allocator.dupe(u8, sp);
+        allocator.free(cfg.shader);
+        cfg.shader = v;
     }
     if (cli.theme_name) |tn| {
+        const v = try allocator.dupe(u8, tn);
         if (cfg.theme) |old| allocator.free(old);
-        cfg.theme = try allocator.dupe(u8, tn);
+        cfg.theme = v;
     }
     if (cli.output) |o| {
+        const v = try allocator.dupe(u8, o);
         if (cfg.output) |old| allocator.free(old);
-        cfg.output = try allocator.dupe(u8, o);
+        cfg.output = v;
         // Pinning from the command line changes the wait default too.
         if (!cfg.output_wait_set) cfg.output_wait = config_mod.defaultOutputWait(cfg.output);
     }
-
     return cfg;
 }
 

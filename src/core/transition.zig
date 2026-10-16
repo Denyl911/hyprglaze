@@ -110,8 +110,6 @@ pub const TransitionState = struct {
     }
 };
 
-/// Convert a per-frame smoothing factor to a frame-rate independent alpha.
-/// Factor is tuned for 30fps: 0 = instant, 1 = frozen.
 /// Launch fade: 0 = pure background, 1 = the effect at full strength.
 /// Smoothstepped so it neither pops at the start nor lands with a step.
 /// A non-positive duration disables it (always 1).
@@ -133,6 +131,8 @@ test "fadeIn ramps from 0 through the midpoint to 1" {
     try std.testing.expectEqual(@as(f32, 1.0), fadeIn(9.0, 2.0));
 }
 
+/// Convert a per-frame smoothing factor to a frame-rate independent alpha.
+/// Factor is tuned for 30fps: 0 = instant, 1 = frozen.
 pub fn smoothAlpha(factor: f32, dt: f32) f32 {
     if (factor <= 0) return 1.0; // off: track the target exactly
     const f = std.math.clamp(factor, 0.001, 0.999);

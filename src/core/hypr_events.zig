@@ -12,11 +12,15 @@ const log = std.log.scoped(.hypr_events);
 /// `custom>>hg:*` events, so the main thread never polls `.socket.sock`.
 ///
 ///   hg:cur:<x>,<y>   cursor moved — stored in atomics
-///   hg:geo:<wsid>\x1d<records>
-///                    workspace id + visible-window snapshot — stored
-///                    under mutex, generation counter bumped
+///   hg:mgeo:<output>\x1d<wsid>\x1d<ox>\x1d<oy>\x1d<records>
+///                    one monitor's workspace id, layout origin and
+///                    visible-window snapshot — events for other outputs
+///                    are dropped; stored under mutex, generation bumped
 ///   hg:hb2           watcher heartbeat (~2s) — timestamp stored so the
 ///                    main loop can detect a dead watcher and reinstall
+///
+/// A bare `hg:geo` (and `hg:hb`) comes from an older, pre-per-monitor
+/// watcher; see `legacy_watcher`.
 pub const HyprEvents = struct {
     socket_path: [256]u8,
     socket_path_len: usize,
@@ -37,7 +41,7 @@ pub const HyprEvents = struct {
     /// startup.
     cursor_xy: std.atomic.Value(u64) = .init(0),
 
-    /// Visible-window snapshot from the latest `hg:geo` event. Written by
+    /// Visible-window snapshot from the latest `hg:mgeo` event for our output. Written by
     /// the reader thread under `snapshot_mutex`; `snapshot_gen` is bumped
     /// after each write so the main thread can copy only when it changed.
     /// The lock is a spin-on-tryLock: both critical sections are a single
@@ -286,7 +290,7 @@ fn readSocket(
                 line_len.* += 1;
             }
             // Overlong lines silently truncate. The only long lines we
-            // parse are hg:geo, whose worst case fits the buffer.
+            // parse are hg:mgeo, whose worst case fits the buffer.
         }
     }
 }
@@ -348,10 +352,10 @@ fn handleLine(self: *HyprEvents, line: []const u8) void {
     }
 
     // Everything else (workspace/window lifecycle other than closewindow,
-    // submap, bell, …) is ignored: the Lua watcher's hg:geo events supersede the old
+    // submap, bell, …) is ignored: the Lua watcher's hg:mgeo events supersede the old
     // dirty-flag machinery — any change that matters shows up as a new
     // snapshot within one watcher tick. That includes workspacev2:
-    // workspace identity rides inside hg:geo so it stays atomic with
+    // workspace identity rides inside hg:mgeo so it stays atomic with
     // the window set it describes.
 }
 

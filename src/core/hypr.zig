@@ -180,16 +180,16 @@ pub const HyprIpc = struct {
         return parseCursorPos(reply) orelse error.BadCursorReply;
     }
 
-    /// Evaluate a Lua chunk in Hyprland's config Lua state. Requires the
-    /// Lua config manager (Hyprland ≥0.55). Returns error.EvalRejected
-    /// when the compositor reports anything other than "ok" — typically a
-    /// Lua error, or a classic hyprlang config where eval is unsupported.
     /// Upper bound on a chunk this can send. watcher.lua is the only caller
     /// and sits well inside it; the headroom is so its documentation header
     /// never has to be traded against the buffer size.
     pub const max_eval_chunk = eval_cmd_buf_len - "eval ".len;
     const eval_cmd_buf_len = 16384;
 
+    /// Evaluate a Lua chunk in Hyprland's config Lua state. Requires the
+    /// Lua config manager (Hyprland ≥0.55). Returns error.EvalRejected
+    /// when the compositor reports anything other than "ok" — typically a
+    /// Lua error, or a classic hyprlang config where eval is unsupported.
     pub fn eval(self: *const HyprIpc, code: []const u8) !void {
         var cmd_buf: [eval_cmd_buf_len]u8 = undefined;
         const cmd = std.fmt.bufPrint(&cmd_buf, "eval {s}", .{code}) catch return error.CodeTooLong;
@@ -199,7 +199,7 @@ pub const HyprIpc = struct {
         var reply_buf: [8192]u8 = undefined;
         const reply = try self.query(cmd, &reply_buf);
         if (!std.mem.eql(u8, std.mem.trimEnd(u8, reply, "\n"), "ok")) {
-            std.log.scoped(.hypr_ipc).err("eval rejected: {s}", .{reply});
+            log.err("eval rejected: {s}", .{reply});
             return error.EvalRejected;
         }
     }
