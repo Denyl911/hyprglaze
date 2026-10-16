@@ -45,6 +45,7 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 | `fur` | A short combed pile: the cursor parts it, windows crush it flat and heap a ridge at their edges, bass shivers the coat |
 | `amorphous` | Flat liquid blobs in two layers, colors rolled from the theme; they drift, meet gentle resistance at windows, wrap across the screen, loosen and ripple with music, and the cursor is a lamp on their edges |
 | `laser` | Lasers fired from opposite screen corners toward the cursor in two theme colours, reflecting off windows and the screen's edges and dimming with every bounce, through smoke they light up; one resonates with the lows, the other with the highs |
+| `flux` | Magnetic field lines: every window is a bar magnet, the cursor a compass needle; pulses flow north to south with the music |
 | `crystal` | A ray-traced cluster of quartz shards with real refraction and dispersion; your windows are the lights, and the focused one is the key light |
 
 ## Requirements
@@ -76,7 +77,8 @@ zig build run
 ```toml
 # Effects: particles, windowglow, cellbloom, concentric, fluid, starfield,
 #          visualizer, milkdrop, glitch, buddy, ai-buddy, tide, fire, swarm,
-#          voltaic, moire, ivy, whorl, weft, crystal, fur, amorphous, laser
+#          voltaic, moire, ivy, whorl, weft, crystal, fur, amorphous, laser,
+#          flux
 effect = "fluid"
 theme = "Rosé Pine"
 # output = "DP-1"     # monitor to render on; default is the focused one
@@ -165,6 +167,12 @@ count = 60            # wave sources / orbiting bodies (max 60)
 fuzz = true           # ring-grating moire field; false = comet dots + trails
 wavelength = 100.0    # px between wave crests
 grating = 4           # thin rings drawn per wavelength (1-12); more = finer moire
+# sink = "..."        # PulseAudio monitor source (auto-detected by default)
+
+[flux]
+lines = 36            # field lines leaving each pole (4-64)
+compass = true        # the cursor is a compass needle that follows the field
+music = true          # pulses quicken and flash with the music
 # sink = "..."        # PulseAudio monitor source (auto-detected by default)
 
 [ivy]

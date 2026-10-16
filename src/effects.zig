@@ -31,6 +31,7 @@ const crystal = @import("effects/crystal.zig");
 const fur = @import("effects/fur.zig");
 const amorphous = @import("effects/amorphous.zig");
 const laser = @import("effects/laser/context.zig");
+const flux = @import("effects/flux.zig");
 
 /// Class and title of one mapped window (truncated copies), parallel to
 /// `FrameState.windows` by index.
@@ -106,6 +107,7 @@ pub const Effect = union(enum) {
     fur: fur.Context,
     amorphous: amorphous.Context,
     laser: laser.Context,
+    flux: flux.Context,
 
     /// Config section an effect reads its params from. Defaults to the
     /// variant name; the exceptions: starfield and milkdrop intentionally
