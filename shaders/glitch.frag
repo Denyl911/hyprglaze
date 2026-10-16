@@ -1,19 +1,24 @@
 #version 300 es
 precision highp float;
 
-uniform vec3 iResolution;
-uniform float iTime;
-uniform vec4 iMouse;
-uniform vec4 iWindow;
-uniform vec4 iWindows[32];
-uniform int iWindowCount;
-uniform float iTransition;
+// Glitch: the display end of a circuit-bent video feedback loop. The loop
+// itself runs in src/effects/glitch.zig at video resolution; this pass is
+// the monitor: it maps the loop's monochrome signal onto the theme's
+// surface tones, lets accents bleed off sideways like delayed chroma, rings
+// on hard edges, and draws the scanlines the signal really has.
 
-// [0] = (band0, band1, band2, band3)  sub-bass, bass, low-mid, mid
-// [1] = (band4, band5, beat, flight_time)  high-mid, high, beat, time
-// [2] = (glitch_seed, total_energy, bass_smooth, 0)
-uniform vec4 iParticles[300];
-uniform int iParticleCount;
+uniform vec3 iResolution;
+// The loop's last frames, newest at layer iGlitchHead: r luma, g accent
+// strength, b accent hue.
+uniform highp sampler2DArray iGlitchHist;
+uniform int iGlitchHead;
+uniform vec4 iGlitchSlit;     // slit-scan: depth (frames), band height (uv), seed
+uniform vec2 iGlitchSim;      // loop resolution
+uniform vec4 iGlitchTear;     // tear band: y (0..1), x shift (uv), half height
+uniform float iGlitchChroma;  // chroma delay, loop pixels
+uniform vec4 iGlitchPix;      // mosaic: block (loop px, 0 = off), zone share, seed
+uniform vec4 iGlitchDither;   // ordered dither: levels (0 = off), cell (screen px)
+uniform vec4 iGlitchVsync;    // vsync: roll offset (0..1), blanking bar height, bounce (screen px)
 
 uniform vec3 iPalette[16];
 uniform int iPaletteSize;
@@ -22,263 +27,107 @@ uniform vec3 iPaletteFg;
 
 out vec4 fragColor;
 
-// --- Audio helpers ---
-float getBand(int i) {
-    if (i < 4) {
-        if (i == 0) return iParticles[0].x;
-        if (i == 1) return iParticles[0].y;
-        if (i == 2) return iParticles[0].z;
-        return iParticles[0].w;
-    }
-    if (i == 4) return iParticles[1].x;
-    return iParticles[1].y;
-}
-float getBeat()      { return iParticles[1].z; }
-float getTime()      { return iParticles[1].w; }
-float getSeed()      { return iParticles[2].x; }
-float getEnergy()    { return iParticles[2].y; }
-float getBassSm()    { return iParticles[2].z; }
+const int SLOTS = 16;
 
-// --- Hash / noise ---
-float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
 }
 
-float hash1(float n) {
-    return fract(sin(n) * 43758.5453);
+// 4x4 Bayer threshold, 0..1.
+float bayer4(vec2 p) {
+    ivec2 i = ivec2(mod(p, 4.0));
+    int m[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
+    return (float(m[i.y * 4 + i.x]) + 0.5) / 16.0;
 }
 
-vec2 hash2(vec2 p) {
-    return vec2(hash(p), hash(p + vec2(37.0, 91.0)));
+vec3 bgColor() {
+    return iPaletteSize > 0 ? iPaletteBg : vec3(0.09, 0.08, 0.13);
 }
 
-float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float a = hash(i);
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+// Surface tones: background up to the muted grey (bright black), with a
+// trace of foreground only where ringing overshoots past full signal.
+vec3 surface(float y) {
+    vec3 bg = bgColor();
+    vec3 muted = iPaletteSize > 8 ? iPalette[8] : mix(bg, vec3(0.6), 0.4);
+    vec3 fg = iPaletteSize > 0 ? iPaletteFg : vec3(0.85);
+    vec3 lift = mix(bg, muted, 0.4);
+    if (y < 0.5) return mix(bg, lift, y / 0.5);
+    if (y < 1.0) return mix(lift, muted, (y - 0.5) / 0.5);
+    return mix(muted, fg, min(y - 1.0, 1.0) * 0.6);
 }
 
-float fbm(vec2 p) {
-    float v = 0.0;
-    float a = 0.5;
-    vec2 shift = vec2(100.0);
-    for (int i = 0; i < 5; i++) {
-        v += a * noise(p);
-        p = p * 2.0 + shift;
-        a *= 0.5;
-    }
-    return v;
-}
+// Chromatic slots, normal then bright (skipping the neutrals 0, 7, 8, 15).
+const int ACCENTS[12] = int[12](1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14);
 
-vec2 domainWarp(vec2 p, float t, float strength) {
-    float wx = fbm(p + vec2(t * 0.3, 0.0));
-    float wy = fbm(p + vec2(0.0, t * 0.2) + vec2(5.2, 1.3));
-    return p + vec2(wx, wy) * strength;
-}
-
-// --- Palette sampling ---
-// Chromatic indices: normal 1-6, bright 9-14 (skip neutrals 0,7,8,15)
-const int PAL_IDX[12] = int[12](1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14);
-
-vec3 samplePalette(float t) {
-    vec3 bg = (iPaletteSize > 0) ? iPaletteBg : vec3(0.1, 0.09, 0.14);
-    if (iPaletteSize < 2) return bg;
-
-    // Map through all 12 chromatic colors (normal + bright)
-    t = clamp(t, 0.0, 1.0);
-    int count = min(iPaletteSize > 9 ? 12 : 6, 12);
-    float idx = t * float(count - 1);
-    int i0 = int(floor(idx));
-    int i1 = min(i0 + 1, count - 1);
-    float f = fract(idx);
-
-    int p0 = PAL_IDX[i0];
-    int p1 = PAL_IDX[i1];
-
-    vec3 c0 = (iPaletteSize > p0) ? iPalette[p0] : vec3(0.5);
-    vec3 c1 = (iPaletteSize > p1) ? iPalette[p1] : vec3(0.5);
-    return mix(c0, c1, f);
-}
-
-// Base pattern: domain-warped FBM mapped through palette
-vec3 basePattern(vec2 uv, float t) {
-    vec2 p = uv * 3.0;
-    vec2 warped = domainWarp(p, t, 0.4 + getBassSm() * 0.3);
-    float n = fbm(warped);
-    return samplePalette(n);
-}
-
-// --- Window SDF ---
-float windowSDF(vec2 p) {
-    float d = 1e6;
-    for (int i = 0; i < iWindowCount && i < 32; i++) {
-        vec4 win = iWindows[i];
-        if (win.z < 1.0) continue;
-        vec2 center = win.xy + win.zw * 0.5;
-        vec2 half_size = win.zw * 0.5;
-        vec2 q = abs(p - center) - half_size;
-        float wd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
-        d = min(d, wd);
-    }
-    return d;
-}
-
-float focusedSDF(vec2 p) {
-    if (iWindow.z < 1.0) return 1e6;
-    vec2 center = iWindow.xy + iWindow.zw * 0.5;
-    vec2 half_size = iWindow.zw * 0.5;
-    vec2 q = abs(p - center) - half_size;
-    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
-}
-
-// --- Glitch effects ---
-
-// Block displacement: random rectangular regions shift
-vec2 blockDisplace(vec2 uv, vec2 res, float seed, float intensity) {
-    if (intensity < 0.01) return uv;
-
-    // Divide into block grid, hash determines which blocks are "corrupt"
-    float block_h = 0.02 + hash1(seed * 7.0) * 0.08;
-    float row = floor(uv.y / block_h);
-    float block_hash = hash(vec2(row, seed));
-
-    // Only corrupt some blocks
-    if (block_hash > 0.3 + (1.0 - intensity) * 0.5) return uv;
-
-    // Horizontal shift amount
-    float shift = (hash(vec2(row, seed + 1.0)) - 0.5) * 0.15 * intensity;
-    return vec2(uv.x + shift, uv.y);
-}
-
-// VHS wobble: sinusoidal horizontal displacement
-vec2 vhsWobble(vec2 uv, float intensity, float t) {
-    if (intensity < 0.01) return uv;
-    float wobble = sin(uv.y * 15.0 + t * 2.0) * 0.008 * intensity;
-    wobble += sin(uv.y * 40.0 + t * 5.0) * 0.003 * intensity;
-    return vec2(uv.x + wobble, uv.y);
-}
-
-// Horizontal jitter: per-row random offset
-vec2 horizontalJitter(vec2 uv, float fc_y, float seed, float probability) {
-    if (probability < 0.01) return uv;
-    float row = floor(fc_y / 2.0); // 2px row groups
-    float h = hash(vec2(row, seed + 3.0));
-    if (h > probability) return uv;
-    float offset = (hash(vec2(row, seed + 4.0)) - 0.5) * 0.04 * probability;
-    return vec2(uv.x + offset, uv.y);
-}
-
-// RGB split / chromatic aberration
-vec3 rgbSplit(vec2 uv, float t, float intensity) {
-    float offset = 0.005 * intensity;
-    float angle = t * 0.5;
-    vec2 dir = vec2(cos(angle), sin(angle)) * offset;
-
-    vec3 r = basePattern(uv + dir, t);
-    vec3 g = basePattern(uv, t);
-    vec3 b = basePattern(uv - dir, t);
-    return vec3(r.r, g.g, b.b);
-}
-
-// Posterize: quantize color levels
-vec3 posterize(vec3 col, float intensity) {
-    if (intensity < 0.01) return col;
-    float levels = mix(16.0, 3.0, clamp(intensity, 0.0, 1.0));
-    return floor(col * levels + 0.5) / levels;
-}
-
-// Scanlines: darken every Nth row
-float scanlines(float fc_y, float intensity) {
-    if (intensity < 0.01) return 1.0;
-    float gap = mix(4.0, 2.0, clamp(intensity, 0.0, 1.0));
-    float line = mod(fc_y, gap);
-    float mask = smoothstep(0.0, 1.0, line);
-    return mix(1.0, mask, intensity * 0.5);
-}
-
-// Static noise overlay
-vec3 staticNoise(vec2 uv, float t, float intensity) {
-    float n = hash(uv * iResolution.xy + vec2(t * 1000.0));
-    return vec3(n) * intensity * 0.15;
+vec3 accent(float hue) {
+    int n = iPaletteSize > 14 ? 12 : 6;
+    int k = ACCENTS[clamp(int(hue * float(n)), 0, n - 1)];
+    return iPaletteSize > k ? iPalette[k] : vec3(0.8, 0.4, 0.6);
 }
 
 void main() {
-    vec2 fc = gl_FragCoord.xy;
-    vec2 uv = fc / iResolution.xy;
+    vec2 uv = gl_FragCoord.xy / iResolution.xy;
 
-    vec3 bg = (iPaletteSize > 0) ? iPaletteBg : vec3(0.1, 0.09, 0.14);
+    // Lost vertical hold: the picture bounces and rolls, and the blanking
+    // interval it should hide scrolls through as a dark bar.
+    uv.y = fract(uv.y + iGlitchVsync.x + iGlitchVsync.z / iResolution.y);
+    float blank = iGlitchVsync.y > 0.0 ? 1.0 - step(iGlitchVsync.y, uv.y) : 0.0;
 
-    // Audio values
-    float sub_bass = getBand(0);
-    float bass = getBand(1);
-    float low_mid = getBand(2);
-    float mid = getBand(3);
-    float high_mid = getBand(4);
-    float high = getBand(5);
-    float beat = getBeat();
-    float t = iTime;
-    float seed = getSeed();
-    float energy = getEnergy();
+    // A torn band of the frame slips sideways.
+    if (abs(uv.y - iGlitchTear.x) < iGlitchTear.z) uv.x = fract(uv.x + iGlitchTear.y);
 
-    // Spatial modulation
-    float wd = windowSDF(fc);
-    float fd = focusedSDF(fc);
-    bool inside_window = wd < 0.0;
-
-    // Glitch intensity: amplified near window edges, reduced near focused window and cursor
-    float edge_boost = 1.0 + smoothstep(80.0, 0.0, abs(wd)) * 0.5;
-    float focus_calm = 1.0 - smoothstep(200.0, 0.0, fd) * 0.4 * iTransition;
-    float cursor_dist = length(fc - iMouse.xy);
-    float cursor_calm = 1.0 - smoothstep(200.0, 0.0, cursor_dist) * 0.3;
-    float spatial = edge_boost * focus_calm * cursor_calm;
-
-    // Scale glitch intensities by audio bands and spatial factor
-    float block_i = bass * 1.2 * spatial + beat * 0.5;
-    float wobble_i = sub_bass * spatial;
-    float jitter_p = high_mid * spatial + beat * 0.3;
-    float split_i = bass * 0.8 * spatial + beat * 0.6;
-    float poster_i = mid * 0.6 * spatial;
-    float scan_i = low_mid * 0.7 * spatial;
-    float noise_i = high * spatial + beat * 0.2;
-
-    // Apply UV distortions
-    vec2 guv = uv;
-    guv = blockDisplace(guv, iResolution.xy, seed, block_i);
-    guv = vhsWobble(guv, wobble_i, t);
-    guv = horizontalJitter(guv, fc.y, seed, jitter_p);
-
-    // Color: RGB split (samples base pattern 3x) or straight base
-    vec3 col;
-    if (split_i > 0.01) {
-        col = rgbSplit(guv, t, split_i);
-    } else {
-        col = basePattern(guv, t);
+    // Mosaic: zones of the frame drop to a coarse block grid.
+    vec2 sim = uv * iGlitchSim;
+    if (iGlitchPix.x > 0.0) {
+        float b = iGlitchPix.x;
+        if (hash12(floor(sim / (b * 6.0)) + iGlitchPix.z) < iGlitchPix.y) {
+            sim = (floor(sim / b) + 0.5) * b;
+            uv.x = sim.x / iGlitchSim.x;
+        }
     }
 
-    // Ghost echo: sample at time offsets
-    float ghost_strength = energy * 0.3 + beat * 0.4;
-    if (ghost_strength > 0.02) {
-        vec3 g1 = basePattern(guv + vec2(0.003), t - 0.08);
-        vec3 g2 = basePattern(guv - vec2(0.005), t - 0.16);
-        col = mix(col, g1, ghost_strength * 0.25);
-        col = mix(col, g2, ghost_strength * 0.12);
+    // Sample the loop row by row: nearest vertically (scanlines), smooth
+    // along the line like an analogue signal.
+    float row = (floor(sim.y) + 0.5) / iGlitchSim.y;
+    // Slit-scan: each band of rows plays back from its own moment.
+    float delay = floor(hash12(vec2(floor(uv.y / iGlitchSlit.y), iGlitchSlit.z)) * iGlitchSlit.x);
+    float layer = float((iGlitchHead - int(delay) + SLOTS) % SLOTS);
+    vec3 suv = vec3(uv.x, row, layer);
+    float px = 1.0 / iGlitchSim.x;
+    float y = texture(iGlitchHist, suv).r;
+
+    // Composite ringing: a hard edge overshoots and leaves a ghost.
+    float yl = texture(iGlitchHist, suv - vec3(1.5 * px, 0.0, 0.0)).r;
+    y = clamp(y + (y - yl) * 0.55, 0.0, 1.6);
+
+    // Crude ordered dither down to a few levels, in fat screen cells.
+    if (iGlitchDither.x > 0.0) {
+        float lv = iGlitchDither.x;
+        float t = bayer4(floor(gl_FragCoord.xy / iGlitchDither.y));
+        y = floor(min(y, 1.0) * lv + t) / lv;
     }
 
-    // Post-processing
-    col = posterize(col, poster_i);
-    col *= scanlines(fc.y, scan_i);
-    col += staticNoise(uv, t, noise_i);
+    vec3 col = surface(y);
 
-    // Beat flash
-    col += bg * beat * 0.25;
+    // Chroma arrives late: accents land to the right of the luma they rode.
+    vec3 cuv = suv - vec3(iGlitchChroma * px, 0.0, 0.0);
+    float a = texture(iGlitchHist, cuv).g;
+    ivec2 ct = ivec2(mod(floor(cuv.xy * iGlitchSim), iGlitchSim));
+    float hue = texelFetch(iGlitchHist, ivec3(ct, int(layer)), 0).b;
+    col = mix(col, accent(hue), smoothstep(0.12, 0.6, a) * 0.85);
 
-    // Vignette
-    col *= 1.0 - 0.15 * length(uv - 0.5);
+    // Scanline gap, darkened toward the background.
+    float f = abs(fract(sim.y) - 0.5) * 2.0;
+    col = mix(col, bgColor(), smoothstep(0.5, 1.0, f) * 0.22);
+
+    // The blanking bar: darker than black, with the sync pulse a sliver
+    // of muted grey through it.
+    if (blank > 0.0) {
+        float pulse = 1.0 - step(0.12, abs(uv.y / iGlitchVsync.y - 0.6));
+        col = mix(bgColor() * 0.55, surface(0.8), pulse * 0.5);
+    }
 
     fragColor = vec4(col, 1.0);
 }

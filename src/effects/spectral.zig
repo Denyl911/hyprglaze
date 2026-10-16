@@ -2,7 +2,7 @@
 //!
 //! AudioCapture ships TIME-DOMAIN samples (128/channel, box-averaged from
 //! a 1/60s window — effective rate ~7.7kHz, Nyquist ~3.8kHz). The older
-//! 6-band split used by glitch/voltaic slices that window by TIME, so its
+//! 6-band split (bands.zig, still used by voltaic) slices that window by TIME, so its
 //! "bands" are correlated loudness envelopes, not frequencies. This module
 //! does the real thing: Hann window + 128-point FFT + log-spaced bands
 //! with per-band auto-gain. Grown in whorl, extracted for reuse.
