@@ -7,7 +7,8 @@
 # Produces $OUT/shots/<effect>-*.png.
 
 FX=${HG_EFFECT:?set HG_EFFECT to the effect to probe}
-show_harness
+# Screenshots only, so hidden (15fps) is fine; HG_SHOW=1 to watch it.
+[ -n "${HG_SHOW:-}" ] && show_harness
 place fx-a 11 250 300 500 350
 place fx-b 11 950 550 400 400
 start_effect "$MON_B" fx "$FX"

@@ -7,7 +7,8 @@
 #
 # Produces $OUT/shots/life-*.png.
 
-show_harness
+# Screenshots only, so hidden (15fps) is fine; HG_SHOW=1 to watch it.
+[ -n "${HG_SHOW:-}" ] && show_harness
 E "hl.dispatch(hl.dsp.focus({ workspace = 11 }))" >/dev/null
 start_effect "$MON_B" flux flux
 F_PID=$EFFECT_PID

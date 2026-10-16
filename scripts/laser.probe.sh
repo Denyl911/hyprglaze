@@ -6,7 +6,8 @@
 #
 # Produces $OUT/shots/laser-*.png.
 
-show_harness
+# Screenshots only, so hidden (15fps) is fine; HG_SHOW=1 to watch it.
+[ -n "${HG_SHOW:-}" ] && show_harness
 place lz-a 11 250 300 500 350
 place lz-b 11 950 550 400 400
 start_effect "$MON_B" laser laser
