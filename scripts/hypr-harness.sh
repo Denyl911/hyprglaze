@@ -21,6 +21,7 @@
 #   hc/hcj ARGS              hyprctl against the nested instance
 #   E LUA                    hyprctl eval against the nested instance
 #   start_daemon OUT TAG     launch hyprglaze pinned to an output
+#   start_effect OUT TAG FX [CFG]  launch a real effect pinned to an output
 #   place CLS WS LX LY W H   open a probe window at monitor-local coords
 #   shot NAME OUTPUT         grim one output into $OUT/shots/NAME.png
 #   show_harness             show the nested outputs on the host (full fps)
@@ -256,6 +257,22 @@ start_daemon() {   # OUTPUT TAG
     wait_for "hcj layers | jq -e --arg m '$1' '.[\$m].levels[\"0\"][]?|select(.namespace==\"hyprglaze\")' >/dev/null" 15
 }
 
+start_effect() {   # OUTPUT TAG EFFECT [CFG_DIR] — a real effect, pinned
+    # Unlike start_daemon this runs the effect's own shader. CFG_DIR holds
+    # hypr/hyprglaze.toml (default $OUT/cfg); HG_THEME overrides the theme.
+    # Sets DAEMON_<TAG>_PID and EFFECT_PID; logs to $OUT/hyprglaze-TAG.log.
+    local cfg="${4:-$OUT/cfg}"
+    env -u DISPLAY WAYLAND_DISPLAY="$NESTED_WL" HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" \
+        XDG_CONFIG_HOME="$cfg" XDG_STATE_HOME="$OUT/state" \
+        "$BIN" --config "$cfg/hypr/hyprglaze.toml" \
+               --effect "$3" --theme "${HG_THEME:-Rosé Pine}" \
+               --output "$1" >"$OUT/hyprglaze-$2.log" 2>&1 &
+    DAEMON_PIDS+=($!)
+    EFFECT_PID=$!
+    eval "DAEMON_${2}_PID=$!"
+    wait_for "hcj layers | jq -e --arg m '$1' '.[\$m].levels[\"0\"][]?|select(.namespace==\"hyprglaze\")' >/dev/null" 15
+}
+
 place() {          # CLASS WS LOCAL_X LOCAL_Y W H   (monitor-local coords)
     local cls=$1 ws=$2 lx=$3 ly=$4 w=$5 h=$6 ox=0 oy=0
     case "$ws" in 1[0-9]) ox=$BX; oy=$BY ;; esac
@@ -278,8 +295,6 @@ place() {          # CLASS WS LOCAL_X LOCAL_Y W H   (monitor-local coords)
     # Never trust the request; the read-back is the ground truth.
     wait_for "[ \"\$(hcj clients | jq -r --arg c '$cls' '.[]|select(.class==\$c)|\"\(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])\"')\" = \"$gx $gy $w $h\" ]" 10
 }
-
-wl_ptr() { WAYLAND_DISPLAY="$NESTED_WL" wlrctl pointer move "$@"; }
 
 # Closed-loop absolute cursor placement in layout coords. wlrctl only moves
 # relatively and the compositor may still massage the delta, so nudge and

@@ -10,13 +10,7 @@ start_blob() {   # OUTPUT TAG SIZE
     mkdir -p "$OUT/cfg-$2/hypr"
     { cat "$OUT/cfg/hypr/hyprglaze.toml"; printf '\n[amorphous]\nsize = %s\n' "$3"; } \
         > "$OUT/cfg-$2/hypr/hyprglaze.toml"
-    env -u DISPLAY WAYLAND_DISPLAY="$NESTED_WL" HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" \
-        XDG_CONFIG_HOME="$OUT/cfg-$2" XDG_STATE_HOME="$OUT/state" \
-        "$BIN" --config "$OUT/cfg-$2/hypr/hyprglaze.toml" \
-               --effect amorphous --theme "Rosé Pine" \
-               --output "$1" >"$OUT/hyprglaze-$2.log" 2>&1 &
-    DAEMON_PIDS+=($!)
-    wait_for "hcj layers | jq -e --arg m '$1' '.[\$m].levels[\"0\"][]?|select(.namespace==\"hyprglaze\")' >/dev/null" 15
+    start_effect "$1" "$2" amorphous "$OUT/cfg-$2"
 }
 
 start_blob $MON_B large 1.0

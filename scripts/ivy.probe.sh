@@ -49,14 +49,8 @@ place ivy-a 11 200 200 500 400
 place ivy-b 11 850 300 500 500
 PID_B=${CLIENT_PIDS[-1]}
 
-env -u DISPLAY WAYLAND_DISPLAY="$NESTED_WL" HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" \
-    XDG_CONFIG_HOME="$OUT/cfg-ivy" XDG_STATE_HOME="$OUT/state" \
-    "$BIN" --config "$OUT/cfg-ivy/hypr/hyprglaze.toml" \
-           --effect ivy --theme "Rosé Pine" \
-           --output "$MON_B" >"$OUT/hyprglaze-ivy.log" 2>&1 &
-DAEMON_PIDS+=($!)
-IVY_PID=$!
-wait_for "hcj layers | jq -e --arg m '$MON_B' '.[\$m].levels[\"0\"][]?|select(.namespace==\"hyprglaze\")' >/dev/null" 15
+start_effect "$MON_B" ivy ivy "$OUT/cfg-ivy"
+IVY_PID=$EFFECT_PID
 
 RA="200 200 500 400"; RB="850 300 500 500"
 for t in 1 3 8 20 35; do

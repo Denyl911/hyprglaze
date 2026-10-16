@@ -9,13 +9,8 @@
 
 show_harness
 E "hl.dispatch(hl.dsp.focus({ workspace = 11 }))" >/dev/null
-env -u DISPLAY WAYLAND_DISPLAY="$NESTED_WL" HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" \
-    XDG_CONFIG_HOME="$OUT/cfg" XDG_STATE_HOME="$OUT/state" \
-    "$BIN" --config "$OUT/cfg/hypr/hyprglaze.toml" --effect flux --theme "${HG_THEME:-Rosé Pine}" \
-           --output "$MON_B" >"$OUT/hyprglaze-flux.log" 2>&1 &
-DAEMON_PIDS+=($!)
-F_PID=$!
-wait_for "hcj layers | jq -e --arg m '$MON_B' '.[\$m].levels[\"0\"][]?|select(.namespace==\"hyprglaze\")' >/dev/null" 15
+start_effect "$MON_B" flux flux
+F_PID=$EFFECT_PID
 move_cursor $((BX + 60)) $((BY + 60)) || true
 sleep 2
 grab life-empty "$MON_B"

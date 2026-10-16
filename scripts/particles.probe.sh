@@ -31,13 +31,8 @@ place pp-a 11 150 350 450 400
 ADDR_A=$(hcj clients | jq -r '.[]|select(.class=="pp-a")|.address')
 ADDR_B=$(hcj clients | jq -r '.[]|select(.class=="pp-b")|.address')
 
-env -u DISPLAY WAYLAND_DISPLAY="$NESTED_WL" HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" \
-    XDG_CONFIG_HOME="$OUT/cfg-p" XDG_STATE_HOME="$OUT/state" \
-    "$BIN" --config "$OUT/cfg-p/hypr/hyprglaze.toml" --effect particles --theme "Rosé Pine" \
-           --output "$MON_B" >"$OUT/hyprglaze-p.log" 2>&1 &
-DAEMON_PIDS+=($!)
-P_PID=$!
-wait_for "hcj layers | jq -e --arg m '$MON_B' '.[\$m].levels[\"0\"][]?|select(.namespace==\"hyprglaze\")' >/dev/null" 15
+start_effect "$MON_B" p particles "$OUT/cfg-p"
+P_PID=$EFFECT_PID
 
 E "hl.dispatch(hl.dsp.focus({ window = 'address:$ADDR_A' }))" >/dev/null
 for t in 1 3 6 10; do sleep $(( t - ${prev:-0} )); prev=$t; grab pp-a$t "$MON_B"; done

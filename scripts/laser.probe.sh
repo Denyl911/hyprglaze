@@ -9,13 +9,8 @@
 show_harness
 place lz-a 11 250 300 500 350
 place lz-b 11 950 550 400 400
-env -u DISPLAY WAYLAND_DISPLAY="$NESTED_WL" HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" \
-    XDG_CONFIG_HOME="$OUT/cfg" XDG_STATE_HOME="$OUT/state" \
-    "$BIN" --config "$OUT/cfg/hypr/hyprglaze.toml" --effect laser --theme "Rosé Pine" \
-           --output "$MON_B" >"$OUT/hyprglaze-laser.log" 2>&1 &
-DAEMON_PIDS+=($!)
-L_PID=$!
-wait_for "hcj layers | jq -e --arg m '$MON_B' '.[\$m].levels[\"0\"][]?|select(.namespace==\"hyprglaze\")' >/dev/null" 15
+start_effect "$MON_B" laser laser
+L_PID=$EFFECT_PID
 # The beam first reaches the screen ~1.5s after the layer maps (frames are
 # drawn at full rate from the first; the cause is not yet understood), so
 # settle before measuring.
