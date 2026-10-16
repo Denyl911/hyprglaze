@@ -39,6 +39,10 @@ out vec4 fragColor;
 // gaps of plain surface between fringes.
 uniform float iRingFreq;
 
+// Thin rings drawn per wavelength (config: grating): the grating whose
+// overlaps make moire.
+uniform float iGrating;
+
 // ---------- gravitational deflection ----------
 
 // Aggregate gravitational-lens deflection at p: each window bends space toward
@@ -87,23 +91,25 @@ void main() {
     vec3 col = bg;
 
     if (iFuzz > 0.5) {
-        // PURE INTERFERENCE: nothing renders but the wave-packet interference
-        // pattern itself — every invisible source's ripples summed (signed) so
-        // they constructively/destructively interfere into one rippling medium.
-        float field = 0.0;
-        vec3 tint = vec3(0.0);
+        // RING MOIRE: every body radiates its own fine ring grating, and
+        // the gratings are overlaid, each weighted by how much its body
+        // dominates here. Inside one body's reach its rings stay clean;
+        // where two reaches meet, two gratings cross and the eye reads the
+        // beat between them: moire. (A plain sum of every wave collapses
+        // into random-phase speckle and clips to white.) Only body heads
+        // radiate; trail samples are for comet mode.
+        float lines = 0.0;     // sum of env^3 * line
+        vec3 lcol = vec3(0.0);
+        float band = 0.0;      // sum of env^3 * soft wave crest
+        vec3 bcol = vec3(0.0);
+        float w2 = 0.0;        // sum of env^6
         float env_sum = 0.0;
-        float cw_sum = 0.0;
-        for (int i = 0; i < iParticleCount && i < 300; i++) {
+        for (int i = 0; i < iParticleCount && i < 300; i += 5) {
             vec4 P = iParticles[i];
 
             vec2 d = wfc - P.xy; // read through the gravitational lens
             if (abs(d.x) > 600.0 || abs(d.y) > 600.0) continue;
 
-            // Doppler streak: include trail samples (age>0) as dimmer smears so
-            // fast bodies blur into motion arcs behind their heads.
-            float age = floor(P.w / 16.0);
-            float aw = exp(-age * 0.45);
             int cid = int(mod(P.w, 16.0));
             vec3 pc = (iPaletteSize > cid) ? iPalette[cid] : vec3(0.7, 0.8, 1.0);
 
@@ -116,82 +122,59 @@ void main() {
             float r = length(d);
 
             // Real Doppler: a moving source bunches its wavefronts ahead of its
-            // motion and stretches them behind. Scale the ring frequency by the
-            // velocity component along the body->point direction.
+            // motion and stretches them behind.
             vec2 vel = iVel[i / 5];
             float sp = length(vel);
             float dopp = 1.0 + clamp(sp / 1100.0, 0.0, 0.45)
                        * dot(d / max(r, 1.0), vel / max(sp, 1.0));
 
-            // Lorentzian envelope (long 1/r^2 tail, not a tight gaussian) so each
-            // source radiates far across the medium and interferes everywhere —
-            // the field reads as one rippling surface, not separate packets.
-            // A smooth radial window tapers it to zero before the square reject
-            // box, so the slow tail never hits a hard edge (which clipped into
-            // axis-aligned "+" artifacts around bright sources).
+            // Lorentzian reach, tapered to zero before the square reject box.
             float window = smoothstep(600.0, 420.0, r);
-            float env = (1.0 / (1.0 + (r * r) / (sigma * sigma * 4.0))) * aw * window;
-            float phase = float(cid) * 2.4;
-            field += env * sin(r * rf * dopp - iFlow + phase);
-            // Square-weight the colour so the nearest/strongest source dominates
-            // the local hue, instead of averaging every body to a washed grey.
-            float cw = env * env;
-            tint += pc * cw;
-            cw_sum += cw;
+            float env = (1.0 / (1.0 + (r * r) / (sigma * sigma * 4.0))) * window;
+            // Small moons recede: a fainter reach, so the big bodies' clean
+            // ring systems carry the composition.
+            env *= mix(0.3, 1.0, smoothstep(1.5, 5.0, P.z));
+            float k = rf * dopp;                       // rad per px
+            float phase = r * k - iFlow + float(cid) * 2.4;
+
+            // The grating: iGrating thin rings per wavelength, measured in px
+            // from the nearest one so they stay ~1.5px wide at any spacing.
+            float fine = phase * iGrating;
+            float dist = abs(mod(fine + 3.1415927, 6.2831853) - 3.1415927) / (k * iGrating);
+            float line = 1.0 - smoothstep(0.5, 1.4, dist);
+
+            // Cubed weights: the dominant body takes over sharply, so only a
+            // narrow seam carries two crossed gratings.
+            float e2 = env * env * env;
+            lines += e2 * line;
+            lcol += pc * e2 * line;
+            float crest = 0.5 + 0.5 * sin(phase);
+            crest *= crest * crest;
+            band += e2 * crest;
+            bcol += pc * e2 * crest;
+            w2 += e2 * e2;
             env_sum += env;
         }
-        vec3 avg = tint / max(cw_sum, 1e-3);
-        // Push saturation so the field stays vivid rather than pastel.
-        float al = dot(avg, vec3(0.299, 0.587, 0.114));
-        avg = max(mix(vec3(al), avg, 1.35), 0.0);
 
-        // Two-tone interference: constructive crests glow in the local body
-        // hue; destructive troughs (the other half-cycle) glow in a cooler
-        // theme accent instead of falling to murky dark — so both fringe
-        // families read as on-palette colour. The nodes (field ~ 0) stay dark
-        // between them naturally.
-        // Cubed falloff narrows both fringe families, so wide bands of the
-        // plain surface tone survive between them.
-        float bc = max(field, 0.0);
-        float neg = max(-field, 0.0);
-        vec3 accent2 = (iPaletteSize > 12) ? iPalette[12] : vec3(0.4, 0.55, 0.95);
-        vec3 troughCol = mix(avg, accent2, 0.6);
-        vec3 mono = avg * bc * bc * bc * 1.1 + troughCol * neg * neg * neg * 0.55;
+        if (w2 > 1e-12) {
+            // Normalized by sqrt(sum env^6): 1 inside one body's reach,
+            // ~0.7 each where two meet evenly, so overlaps stay in range.
+            float norm = inversesqrt(w2);
+            // Rings fade well before the bodies' reach runs out, leaving
+            // plain surface between systems.
+            float presence = smoothstep(0.04, 0.55, env_sum);
+            float punch = 1.0 + min(iBeat, 1.6) * 0.5;
 
-        // Chromatic dispersion disabled — just the palette-colored interference.
-        vec3 inter = max(mono, vec3(0.0));
+            vec3 lc = lcol / max(lines, 1e-6);
+            vec3 bc = bcol / max(band, 1e-6);
+            float L = min(lines * norm, 1.4);
+            float B = min(band * norm, 1.0);
 
-        // Enhance the fringes with crisp iso-amplitude contour lines: thin,
-        // constant-width (fwidth-AA) lines trace the wavefronts and weave
-        // through the field, sharpening the wave structure into a fine web.
-        // Gated by env_sum so the empty background (field ~ 0 everywhere)
-        // doesn't flood with the zero-level line.
-        float g = field / 0.5 - 0.5; // offset so lines sit between the nodes
-        float di = abs(g - floor(g + 0.5));
-        float aa = fwidth(g) + 1e-4;
-        float contour = (1.0 - smoothstep(0.0, aa * 1.5, di)) * smoothstep(0.05, 0.45, env_sum);
-        inter += mix(avg, vec3(1.0), 0.25) * contour * 0.35;
-
-        // Antinodes: only the very strongest constructive peaks flare into
-        // bright near-white focal sparks (sharp cubic so the field stays calm
-        // elsewhere) — gives the kaleidoscope sparkle and depth.
-        float anti = bc * bc * bc;
-        inter += mix(avg, vec3(1.0), 0.2) * anti * 0.45;
-
-        // Beat punch: the whole field flares brighter on the hit.
-        inter *= 1.0 + min(iBeat, 1.6) * 0.5;
-
-        // Firmer Reinhard ceiling keeps dense overlaps in palette tones
-        // instead of blowing toward white lagoons.
-        col += inter / (1.0 + 0.55 * inter);
-
-        // Fringe duality: dark nodal lines where the waves cancel (field ~ 0),
-        // so bright fringes alternate with dark minima — the Young's-
-        // interference signature. The nodes resolve to the theme's deep
-        // background tone (not a murky multiplicative darken) so the dark
-        // fringes stay on-palette. Gated by wave presence.
-        float node = exp(-field * field * 10.0) * smoothstep(0.1, 0.5, env_sum);
-        col = mix(col, bg, node * 0.45);
+            // The slow wave survives as a soft glow under the grating, so
+            // the rings still read as ripples flowing outward.
+            vec3 inter = bc * B * 0.16 + mix(lc, vec3(1.0), 0.2) * L * 0.55;
+            col += inter * presence * punch;
+        }
     } else {
         // Comet mode: tight additive dots with fading trails.
         for (int i = 0; i < iParticleCount && i < 300; i++) {

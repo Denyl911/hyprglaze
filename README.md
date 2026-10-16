@@ -37,7 +37,7 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 | `tide` | Rising water line tied to wall-clock time, with teardrops and splash jets |
 | `fire` | Flames rise from window top edges; moving windows leave a directional wake |
 | `voltaic` | Lightning arcs between window borders, St. Elmo's fire on the focused frame, beat-driven discharges |
-| `moire` | Wave-interference ripples from invisible bodies orbiting windows, gravitationally lensed, audio-reactive |
+| `moire` | Fine ring gratings radiating from invisible bodies orbiting windows; where they cross, moiré fringes. Gravitationally lensed, audio-reactive |
 | `swarm` | Boid murmuration in pixel-block ink; a hawk dives on beats, silence settles the birds onto windows |
 | `ivy` | Bioluminescent vines climb window frames and screen edges until the frame is clad, then mature in place; they wilt when their window moves or closes and wait dormant while it is on another workspace |
 | `weft` | Windows shine through a grainy diffraction weave; the audio waveform threads through the fringes |
@@ -162,7 +162,9 @@ arc_rate = 1.0        # ambient strike frequency multiplier
 
 [moire]
 count = 60            # wave sources / orbiting bodies (max 60)
-fuzz = true           # wave-interference field; false = comet dots + trails
+fuzz = true           # ring-grating moire field; false = comet dots + trails
+wavelength = 100.0    # px between wave crests
+grating = 4           # thin rings drawn per wavelength (1-12); more = finer moire
 # sink = "..."        # PulseAudio monitor source (auto-detected by default)
 
 [ivy]

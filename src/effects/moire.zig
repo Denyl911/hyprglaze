@@ -114,12 +114,16 @@ pub const Context = struct {
     fuzz: bool = true,
     /// Fringe wavelength in px (config: wavelength) — ring-to-ring gap.
     wavelength: f32 = 100.0,
+    /// Thin rings per wavelength (config: grating) — the fine grating whose
+    /// overlaps between bodies read as moire.
+    grating: f32 = 4.0,
 
     cached_program: c.GLuint = 0,
     loc_time: c.GLint = -1,
     loc_bass: c.GLint = -1,
     loc_fuzz: c.GLint = -1,
     loc_ringfreq: c.GLint = -1,
+    loc_grating: c.GLint = -1,
     loc_flow: c.GLint = -1,
     loc_bands: c.GLint = -1,
     loc_beat: c.GLint = -1,
@@ -139,6 +143,7 @@ pub const Context = struct {
             .count = count,
             .fuzz = params.getBool("fuzz", true),
             .wavelength = std.math.clamp(params.getFloat("wavelength", 100.0), 24.0, 400.0),
+            .grating = @round(std.math.clamp(params.getFloat("grating", 4.0), 1.0, 12.0)),
         };
     }
 
@@ -360,6 +365,7 @@ pub const Context = struct {
             self.loc_bass = c.glGetUniformLocation(prog.program, "iBass");
             self.loc_fuzz = c.glGetUniformLocation(prog.program, "iFuzz");
             self.loc_ringfreq = c.glGetUniformLocation(prog.program, "iRingFreq");
+            self.loc_grating = c.glGetUniformLocation(prog.program, "iGrating");
             self.loc_flow = c.glGetUniformLocation(prog.program, "iFlow");
             self.loc_bands = c.glGetUniformLocation(prog.program, "iBands[0]");
             self.loc_beat = c.glGetUniformLocation(prog.program, "iBeat");
@@ -408,6 +414,7 @@ pub const Context = struct {
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.bass);
         if (self.loc_fuzz >= 0) c.glUniform1f(self.loc_fuzz, if (self.fuzz) 1.0 else 0.0);
         if (self.loc_ringfreq >= 0) c.glUniform1f(self.loc_ringfreq, 2.0 * std.math.pi / self.wavelength);
+        if (self.loc_grating >= 0) c.glUniform1f(self.loc_grating, self.grating);
         if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, self.flow);
         if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.bands[0]);
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.beat);
