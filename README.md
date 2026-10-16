@@ -25,7 +25,7 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 |--------|-------------|
 | `particles` | Balls in a substepped XPBD physics sim: they fall toward the focused window and settle against its frame, moving windows bat them, hard hits pop |
 | `windowglow` | Subtle accent glow around focused window, surface tint on unfocused |
-| `cellbloom` | Voronoi cells shaped by window boundaries and cursor, animated drift points |
+| `cellbloom` | Living Voronoi tissue around windows and cursor: rounded cells with glowing membranes that divide and fuse, lit by the music |
 | `concentric` | SDF concentric rings radiating from window edges, cursor interaction |
 | `fluid` | Metaball contour lines that merge organically around windows and cursor |
 | `starfield` | Radial starfield with audio-reactive speed, per-band star colors, beat pulses |

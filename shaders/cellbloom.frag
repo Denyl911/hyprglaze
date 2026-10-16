@@ -16,26 +16,97 @@ uniform int iPaletteSize;
 uniform vec3 iPaletteBg;
 uniform vec3 iPaletteFg;
 
-// Music (all zero / iBloomFlow steady in silence → the classic look).
+// Music (all zero / iBloomFlow steady in silence → a quiet tissue).
 uniform float iBloomFlow;     // CPU drift clock, quickens with energy
 uniform float iBloomBands[6]; // smoothed AGC'd bands, low to high
 uniform float iBloomBass;     // smoothed low end
 uniform float iBloomBeat;     // kick envelope, ~200ms decay
+// Ambient daughter seeds (mother = k / 2, sister = k ^ 1), coincident
+// while the mother is whole: position px, window weight, mother's split.
+uniform vec4 iBloomSeeds[48];
 
 out vec4 fragColor;
 
-float sdRoundBox(vec2 p, vec2 center, vec2 half_size, float radius) {
-    vec2 d = abs(p - center) - half_size + radius;
-    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
+// Seed index space: windows, then the cursor, then ambient daughters
+// (mother = k / 2, sister = k ^ 1).
+const int CURSOR = 32;
+const int AMBIENT = 33;
+const int N_SEEDS = AMBIENT + 48;
+
+// Corner rounding of the cells: the smooth-min radius over their walls.
+const float K = 28.0;
+
+vec3 pal[6];
+vec3 accent;
+
+float focusOf(int i) {
+    float f = 0.0;
+    if (i == iFocusedIndex) f = max(f, smoothstep(0.0, 1.0, iTransition));
+    if (i == iPrevIndex)    f = max(f, 1.0 - smoothstep(0.0, 1.0, iTransition));
+    return f;
+}
+
+// Distance from p to seed idx and its unit gradient. False for an empty
+// window slot.
+bool seedDist(int idx, vec2 p, out float d, out vec2 g) {
+    if (idx < CURSOR) {
+        if (idx >= iWindowCount) return false;
+        vec4 win = iWindows[idx];
+        if (win.z < 1.0 || win.w < 1.0) return false;
+        // Rounded box; the focused window claims more territory.
+        vec2 q = p - (win.xy + win.zw * 0.5);
+        vec2 w = abs(q) - win.zw * 0.5 + 12.0;
+        float out_d = max(w.x, w.y);
+        d = length(max(w, 0.0)) + min(out_d, 0.0) - 12.0;
+        d -= ((1.0 - iTransition) * 80.0 + 15.0) * focusOf(idx); // 95px → 15px
+        g = out_d > 0.0 ? normalize(max(w, 0.0)) : (w.x > w.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
+        g *= vec2(q.x < 0.0 ? -1.0 : 1.0, q.y < 0.0 ? -1.0 : 1.0);
+        return true;
+    }
+    vec4 s = idx == CURSOR ? vec4(iMouse.xy, 0.0, 0.0) : iBloomSeeds[idx - AMBIENT];
+    vec2 v = p - s.xy;
+    d = length(v);
+    g = v / max(d, 1e-3);
+    d += s.z; // window weight
+    return true;
+}
+
+// Tint, band level and fill strength of the cell a seed owns.
+void seedLook(int idx, out vec3 tint, out float level, out float strength) {
+    if (idx < CURSOR) {
+        int ci = idx % 6;
+        tint = mix(pal[ci], accent, focusOf(idx));
+        level = iBloomBands[ci];
+        strength = 1.0;
+    } else if (idx == CURSOR) {
+        tint = accent;
+        level = 0.0;
+        strength = 0.7;
+    } else {
+        // A daughter shares her mother's tint and band while whole and
+        // drifts to her own only once the furrow between them has closed,
+        // so a dividing cell never shows a seam without a wall.
+        int k = idx - AMBIENT;
+        int m = k / 2;
+        int ci = (m + 3) % 6;
+        int bi = m % 6;
+        float split = (k % 2 == 1) ? smoothstep(0.75, 1.0, iBloomSeeds[k].w) : 0.0;
+        tint = mix(pal[ci], pal[(ci + 2) % 6], split);
+        level = mix(iBloomBands[bi], iBloomBands[(bi + 3) % 6], split);
+        strength = 0.6;
+    }
+}
+
+float smin(float a, float b, float k) {
+    float h = max(k - abs(a - b), 0.0) / k;
+    return min(a, b) - h * h * k * 0.25;
 }
 
 void main() {
     vec2 fc = gl_FragCoord.xy;
 
     vec3 bg = (iPaletteSize > 0) ? iPaletteBg : vec3(0.1, 0.09, 0.14);
-    vec3 accent = (iPaletteSize > 5) ? iPalette[5] : vec3(0.77, 0.65, 0.91);
-
-    vec3 pal[6];
+    accent = (iPaletteSize > 5) ? iPalette[5] : vec3(0.77, 0.65, 0.91);
     pal[0] = (iPaletteSize > 1) ? iPalette[1] : vec3(0.9, 0.4, 0.6);
     pal[1] = (iPaletteSize > 2) ? iPalette[2] : vec3(0.6, 0.8, 0.8);
     pal[2] = (iPaletteSize > 3) ? iPalette[3] : vec3(0.9, 0.7, 0.5);
@@ -43,122 +114,92 @@ void main() {
     pal[4] = (iPaletteSize > 5) ? iPalette[5] : vec3(0.7, 0.6, 0.9);
     pal[5] = (iPaletteSize > 6) ? iPalette[6] : vec3(0.9, 0.7, 0.7);
 
-    // Focus expansion: focused window claims more Voronoi territory
-    float focus_expand = (1.0 - iTransition) * 80.0 + 15.0; // 95px → 15px
-
-    vec3 col = bg;
-
-    // --- Voronoi with focus interaction ---
-    // Every cell owner carries a spectral band; the winning cell's band
-    // level drives its fill below (the dancefloor).
-    // Bubbly domain wobble: the Voronoi is sampled through a slow sine
-    // warp, so every cell wall undulates like a soap film. Paced by the
-    // music flow clock; a few px is enough.
-    vec2 wfc = fc + vec2(
+    // Organic wobble: the tissue is sampled through a slow sine warp, so
+    // every membrane undulates. Paced by the music flow clock.
+    vec2 p = fc + vec2(
         sin(fc.y * 0.013 + iBloomFlow * 2.2),
         cos(fc.x * 0.011 + iBloomFlow * 1.8)) * 5.0;
 
-    float d1 = 1e9, d2 = 1e9;
-    vec3 c1 = bg, c2 = bg;
-    float nearest_focus_amt = 0.0;
-    float cell_pulse = 0.0;
-    // Winning point's position for the gloss highlight; windows opt out.
-    vec2 p1 = vec2(-1e6);
-
-    for (int i = 0; i < iWindowCount && i < 32; i++) {
-        vec4 win = iWindows[i];
-        if (win.z < 1.0 || win.w < 1.0) continue;
-
-        float d = sdRoundBox(wfc, win.xy + win.zw * 0.5, win.zw * 0.5, 12.0);
-
-        float focus_amt = 0.0;
-        if (i == iFocusedIndex) focus_amt = max(focus_amt, smoothstep(0.0, 1.0, iTransition));
-        if (i == iPrevIndex)    focus_amt = max(focus_amt, 1.0 - smoothstep(0.0, 1.0, iTransition));
-
-        // Focused window pulls cells toward it, scaled by focus strength.
-        d -= focus_expand * focus_amt;
-
-        int ci = int(mod(float(i), 6.0));
-        vec3 tint = mix(pal[ci], accent, focus_amt);
-
-        if (d < d1) {
-            d2 = d1; c2 = c1;
-            d1 = d;  c1 = tint;
-            nearest_focus_amt = focus_amt;
-            cell_pulse = iBloomBands[ci];
-            p1 = vec2(-1e6);
-        } else if (d < d2) {
-            d2 = d;  c2 = tint;
-        }
+    // --- Pass 1: which cell owns this pixel ---
+    float d1 = 1e9;
+    vec2 g1 = vec2(0.0);
+    int own = -1;
+    for (int i = 0; i < N_SEEDS; i++) {
+        float d; vec2 g;
+        if (!seedDist(i, p, d, g)) continue;
+        if (d < d1) { d1 = d; g1 = g; own = i; }
     }
 
-    // Cursor control point
-    float cursor_d = distance(wfc, iMouse.xy);
-    if (cursor_d < d1) {
-        d2 = d1; c2 = c1;
-        d1 = cursor_d; c1 = accent * 0.4;
-        nearest_focus_amt = 0.0;
-        cell_pulse = 0.0;
-        p1 = iMouse.xy;
-    } else if (cursor_d < d2) {
-        d2 = cursor_d; c2 = accent * 0.4;
+    // --- Pass 2: distance to the owner's walls ---
+    // (d - d1) / |g - g1| is the first-order distance to the bisector,
+    // exact for two points and right for box/point parabolas too, so
+    // walls keep one width everywhere. A smooth min over every wall
+    // rounds the cells' corners.
+    int sister = own >= AMBIENT ? AMBIENT + ((own - AMBIENT) ^ 1) : -1;
+    float furrow = 0.0;
+    if (sister >= 0) {
+        // The wall between sisters only grows in as they split: held back
+        // by an offset, the smooth min pinches it in from the rim first,
+        // like a cleavage furrow, until it closes across the cell.
+        // The offset runs to infinity as the split goes to zero, so a whole
+        // cell carries no crease where the wall will be.
+        float f = smoothstep(0.0, 0.75, iBloomSeeds[own - AMBIENT].w);
+        furrow = (K + 12.0) * (1.0 - f) / max(f, 1e-3);
+    }
+    float D = 1e5;
+    float nb_b = 1e5;
+    int nb = own;
+    for (int i = 0; i < N_SEEDS; i++) {
+        if (i == own) continue;
+        float d; vec2 g;
+        if (!seedDist(i, p, d, g)) continue;
+        // |g - g1| <= 2, so this wall is at least (d - d1) / 2 away: past
+        // the inner glow plus the rounding radius it changes nothing.
+        if (d - d1 > 2.0 * (64.0 + K)) continue;
+        float b = (d - d1) / max(length(g - g1), 0.05);
+        if (i == sister) b += furrow;
+        D = smin(D, b, K);
+        if (b < nb_b) { nb_b = b; nb = i; }
     }
 
-    // Drifting ambient points. The clock comes from the CPU and quickens
-    // with music energy (accumulated, so rate changes never snap phase);
-    // bass heaves the wander amplitude so cells surge on the low end.
-    float t = iBloomFlow;
-    float wander = 0.1 * (1.0 + min(iBloomBass, 1.2) * 0.6);
-    for (int i = 0; i < 24; i++) {
-        float fi = float(i);
-        float px = fract(fi * 0.381966) + wander * sin(t * (0.5 + fi * 0.11));
-        float py = fract(fi * 0.618034) + wander * cos(t * (0.4 + fi * 0.13));
-        vec2 dp = iResolution.xy * vec2(clamp(px, 0.02, 0.98), clamp(py, 0.02, 0.98));
-        float d = distance(wfc, dp);
-        int ci = int(mod(fi + 3.0, 6.0));
-        vec3 tint = pal[ci] * 0.3;
-        if (d < d1) {
-            d2 = d1; c2 = c1;
-            d1 = d;  c1 = tint;
-            nearest_focus_amt = 0.0;
-            cell_pulse = iBloomBands[int(mod(fi, 6.0))];
-            p1 = dp;
-        } else if (d < d2) {
-            d2 = d;  c2 = tint;
-        }
+    vec3 tint, nb_tint;
+    float level, strength, nb_level, nb_strength;
+    seedLook(own, tint, level, strength);
+    seedLook(nb, nb_tint, nb_level, nb_strength);
+
+    // --- Shade: membranes inset from the walls, a dark channel between ---
+    float gap = 3.0 + min(iBloomBass, 1.2) * 1.5;   // bass swells the channels
+    // A cell being crowded out by a window draws its membrane in and fades
+    // into the channel, so it is gone before it dwindles to a speck.
+    float vis = 1.0;
+    if (own > CURSOR) {
+        float w = iBloomSeeds[own - AMBIENT].z;
+        gap += w * 0.2;
+        vis = 1.0 - smoothstep(20.0, 80.0, w);
     }
+    float edge = D - gap;                             // > 0 inside the cell
+    float lvl = min(level, 1.2);
 
-    // --- Cell fill: the dancefloor, domed ---
-    // Resting fill is the classic whisper; a cell whose band is playing
-    // floods with its own tint. The dome term lifts interiors toward
-    // their middles and lets them fall to a thin dark rim — cushions,
-    // not flat tiles.
-    float edge_dist = d2 - d1;
-    float dome = smoothstep(0.0, 50.0, edge_dist);
-    float fill = exp(-max(d1, 0.0) / 120.0);
-    float lit = mix(0.03, 0.06, nearest_focus_amt) + min(cell_pulse, 1.2) * 0.30;
-    col = mix(col, c1, fill * min(lit, 0.42) * (0.45 + 0.55 * dome));
+    // Flat fill, lit by the cell's band; windows bloom an aura around them.
+    float lit = (0.08 + lvl * 0.30) * strength;
+    if (own < CURSOR) lit *= mix(0.6, 1.5, exp(-max(d1, 0.0) / 140.0));
+    vec3 cell = mix(bg, tint, min(lit, 0.5));
+    // Glow just inside the membrane only; the interior stays flat.
+    cell += tint * (0.10 + lvl * 0.12 + iBloomBeat * 0.15) * exp(-max(edge, 0.0) / 14.0);
 
-    // Gloss: a soft specular spot offset from each point-owned bubble's
-    // center, like light on a soap film; kicks glint it brighter.
-    if (p1.x > -1e5) {
-        vec2 hp = p1 + vec2(-55.0, 65.0);
-        float gd = distance(fc, hp);
-        float gloss = exp(-gd * gd / 1800.0);
-        col += (accent + vec3(0.25)) * gloss * (0.09 + iBloomBeat * 0.12) * dome;
-    }
+    // The channel picks up both neighbours' tints, meeting halfway at
+    // the wall, so there is no seam where ownership flips.
+    vec3 chan_tint = mix(tint, nb_tint, 0.5 * (1.0 - clamp(D / gap, 0.0, 1.0)));
+    vec3 chan = bg * 0.55 + chan_tint * 0.06;
 
-    // --- Cell walls: soap films ---
-    // Softer and wider than the old hard lines; kicks flash the whole
-    // lattice brighter and momentarily wider.
-    vec3 edge_color = mix(c1, c2, 0.5);
-    float line = 1.0 - smoothstep(0.0, 5.0 + iBloomBeat * 4.0, edge_dist);
-    col = mix(col, edge_color, min(line * (0.5 + iBloomBeat * 0.4), 0.9));
+    vec3 col = mix(chan, cell, smoothstep(-0.75, 0.75, edge) * vis);
 
-    // --- Cursor proximity boost ---
-    float cursor_dist = distance(fc, iMouse.xy);
-    float proximity = exp(-cursor_dist / 150.0);
-    col = mix(col, edge_color, line * proximity * 0.3);
+    // Membrane: a crisp line on the cell's rim. Kicks flash it, and it
+    // brightens near the cursor.
+    float membrane = 1.0 - smoothstep(0.5, 1.6, abs(edge));
+    float cursor_near = exp(-distance(fc, iMouse.xy) / 150.0);
+    vec3 mem_col = mix(tint, vec3(1.0), 0.15 + iBloomBeat * 0.25);
+    col = mix(col, mem_col, membrane * vis * min(0.55 + lvl * 0.2 + iBloomBeat * 0.35 + cursor_near * 0.3, 0.95));
 
     fragColor = vec4(col, 1.0);
 }
