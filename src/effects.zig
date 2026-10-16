@@ -176,13 +176,24 @@ pub const Effect = union(enum) {
     /// except ai_buddy which renders with buddy's frag.
     pub fn defaultShader(self: *const Effect) []const u8 {
         return switch (self.*) {
-            inline else => |_, tag| comptime blk: {
-                const base = if (std.mem.eql(u8, @tagName(tag), "ai_buddy")) "buddy" else @tagName(tag);
-                break :blk "shaders/" ++ base ++ ".frag";
-            },
+            inline else => |_, tag| comptime shaderOf(@tagName(tag)),
         };
     }
+
+    /// The default shader for an effect by its CLI name, without building
+    /// it (no audio thread, no GL); null for an unknown name.
+    pub fn defaultShaderFor(name: []const u8) ?[]const u8 {
+        inline for (@typeInfo(Effect).@"union".fields) |f| {
+            if (std.mem.eql(u8, name, comptime cliName(f.name))) return comptime shaderOf(f.name);
+        }
+        return null;
+    }
 };
+
+fn shaderOf(comptime field_name: []const u8) []const u8 {
+    const base = if (std.mem.eql(u8, field_name, "ai_buddy")) "buddy" else field_name;
+    return "shaders/" ++ base ++ ".frag";
+}
 
 /// CLI-style effect name: the union field name with `_` rewritten to `-`
 /// (e.g. `ai_buddy` -> `ai-buddy`). Comptime only.

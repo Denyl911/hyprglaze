@@ -89,15 +89,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var cfg = try loadConfig(allocator, &cli);
     defer config_mod.deinit(&cfg, allocator);
 
-    // Init effect
-    var effect = effects.Effect.init(cfg.effect, allocator, 0, 0, &cfg) catch |err| {
-        log.err("effect init failed: {}", .{err});
-        return err;
+    // Resolve shader: explicit config > effect default. The effect itself
+    // is built once the surface and GL context exist (milkdrop compiles
+    // shaders in init, and audio effects start capture).
+    const default_shader = effects.Effect.defaultShaderFor(cfg.effect) orelse {
+        log.err("unknown effect: '{s}'. Available: {s}", .{ cfg.effect, effects.effect_names_csv });
+        return error.UnknownEffect;
     };
-    defer effect.deinit();
-
-    // Resolve shader: explicit config > effect default
-    const shader_path = if (cfg.shader.len > 0) cfg.shader else effect.defaultShader();
+    const shader_path = if (cfg.shader.len > 0) cfg.shader else default_shader;
     log.info("effect: {s}", .{cfg.effect});
     log.info("shader: {s}", .{shader_path});
     if (cfg.theme) |t| log.info("theme: {s}", .{t});
@@ -208,7 +207,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     if (pal) |*p| shader_prog.setPalette(p);
 
-    // Re-init effect with actual dimensions. These are BUFFER pixels, which
+    // Build the effect at its actual dimensions. These are BUFFER pixels, which
     // on a scaled output are larger than the logical size the layer surface
     // was configured with — everything downstream (glViewport, iResolution,
     // the layout-to-surface transform) works in this one unit.
@@ -220,11 +219,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
         log.info("rendering at {d}x{d} for a {d}x{d} surface (scale {d:.2})", .{
             wl.buffer_width, wl.buffer_height, wl.width, wl.height, surf_scale,
         });
-    // Via rebuildEffect rather than deinit-then-init: on a large output this
-    // is the first allocation at real size and can fail, and the naive order
-    // would leave `effect` holding a deinited union for the `defer` above to
-    // free a second time. Effect.deinit has no idempotence guard.
-    _ = rebuildEffect(allocator, &effect, &cfg, surf_w, surf_h);
+    var effect = effects.Effect.init(cfg.effect, allocator, surf_w, surf_h, &cfg) catch |err| {
+        log.err("effect init failed: {}", .{err});
+        return err;
+    };
+    defer effect.deinit();
 
     log.info("entering render loop", .{});
 
