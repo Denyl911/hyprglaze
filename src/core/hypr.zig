@@ -23,7 +23,7 @@ pub const WindowGeometry = struct {
     /// the slide axis so the whole strip moves as one piece on a
     /// workspace switch. During a slide the daemon swaps the bucket
     /// behind the camera for the workspace actually being left (see
-    /// main's `captureOutgoing`), since for a multi-step jump that is not
+    /// `strip.captureOutgoing`), since for a multi-step jump that is not
     /// the nearest id.
     rel: i8 = 0,
     class: [128]u8 = undefined,

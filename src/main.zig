@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const iohelp = @import("core/io_helper.zig");
 const wayland = @import("core/wayland.zig");
-const egl_mod = @import("core/egl.zig");
 const shader_mod = @import("core/shader.zig");
 const hypr = @import("core/hypr.zig");
 const palette_mod = @import("core/palette.zig");
@@ -16,6 +15,7 @@ const hypr_events = @import("core/hypr_events.zig");
 const effects = @import("effects.zig");
 const cli_mod = @import("cli.zig");
 const strip = @import("strip.zig");
+const renderer_mod = @import("renderer.zig");
 const particles = @import("effects/particles/system.zig");
 
 pub const std_options: std.Options = .{ .log_level = .info };
@@ -71,9 +71,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var cfg = try loadConfig(allocator, &cli);
     defer config_mod.deinit(&cfg, allocator);
 
-    // Resolve shader: explicit config > effect default. The effect itself
-    // is built once the surface and GL context exist (milkdrop compiles
-    // shaders in init, and audio effects start capture).
+    // Resolve shader: explicit config > effect default. Checked here, before
+    // Wayland, so a bad effect name or shader path fails fast. The effect
+    // itself is built by the Renderer once the surface exists and its real
+    // size is known (audio effects also start capture in init).
     const default_shader = effects.Effect.defaultShaderFor(cfg.effect) orelse {
         log.err("unknown effect: '{s}'. Available: {s}", .{ cfg.effect, effects.effect_names_csv });
         return error.UnknownEffect;
@@ -83,10 +84,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     log.info("shader: {s}", .{shader_path});
     if (cfg.theme) |t| log.info("theme: {s}", .{t});
 
-    var shader_path_expanded = try config_mod.expandHome(allocator, shader_path);
+    const shader_path_expanded = try config_mod.expandHome(allocator, shader_path);
     defer allocator.free(shader_path_expanded);
 
-    const frag_source = loadShaderFile(allocator, shader_path_expanded) catch |err| {
+    const frag_source = renderer_mod.loadShaderFile(allocator, shader_path_expanded) catch |err| {
         log.err("failed to load shader '{s}': {}", .{ shader_path_expanded, err });
         return err;
     };
@@ -174,38 +175,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         return err;
     };
 
-    var egl_state = egl_mod.EglState.init(wl.display, wl.egl_window.?) catch |err| {
-        log.err("EGL init failed: {}", .{err});
-        return err;
-    };
-    defer egl_state.deinit();
-
-    // Shader
-    var shader_prog = shader_mod.ShaderProgram.init(frag_source) catch |err| {
-        log.err("shader compilation failed: {}", .{err});
-        return err;
-    };
-    defer shader_prog.deinit();
-
-    if (pal) |*p| shader_prog.setPalette(p);
-
-    // Build the effect at its actual dimensions. These are BUFFER pixels, which
-    // on a scaled output are larger than the logical size the layer surface
-    // was configured with — everything downstream (glViewport, iResolution,
-    // the layout-to-surface transform) works in this one unit.
-    var surf_w: f32 = @floatFromInt(wl.buffer_width);
-    var surf_h: f32 = @floatFromInt(wl.buffer_height);
-    var surf_scale: f32 = wl.scale();
-    wl.scale_changed = false;
-    if (surf_scale != 1.0)
-        log.info("rendering at {d}x{d} for a {d}x{d} surface (scale {d:.2})", .{
-            wl.buffer_width, wl.buffer_height, wl.width, wl.height, surf_scale,
-        });
-    var effect = effects.Effect.init(cfg.effect, allocator, surf_w, surf_h, &cfg) catch |err| {
-        log.err("effect init failed: {}", .{err});
-        return err;
-    };
-    defer effect.deinit();
+    var r = try renderer_mod.Renderer.init(allocator, &cfg, &wl, pal, shader_path_expanded, frag_source);
+    defer r.deinit();
 
     log.info("entering render loop", .{});
 
@@ -261,9 +232,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var cached_focused_title_len: u8 = 0;
     var fps_timer = try iohelp.Timer.start();
     var timer = try iohelp.Timer.start();
-    // Launch fade: reset whenever the surface is rebuilt, so a rebuild fades
-    // in from the background like a launch instead of popping.
-    var fade_start: f64 = 0.0;
 
     // Seed: bootstrap the focused-window address once via `j/activewindow`
     // because the event stream only carries future changes, never the
@@ -327,13 +295,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
         initial_cursor.y,
         cached_snapshot.origin_x,
         cached_snapshot.origin_y,
-        surf_h,
-        surf_scale,
+        r.height,
+        r.scale,
     );
 
     const raw0 = strip.deriveRawState(
         &cached_snapshot,
-        strip.View.init(surf_w, surf_h, surf_scale, slide.axis),
+        strip.View.init(r.width, r.height, r.scale, slide.axis),
         initial_addr,
         null,
         0,
@@ -363,17 +331,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var last_install_attempt: f64 = 0;
 
     // Initial render: time 0 into the fade is the bare background.
-    effect.upload(&shader_prog);
-    try wl.requestFrame();
-    drawFrame(&shader_prog, surf_w, surf_h, 0.0, &trans, &cached_windows, cached_window_count, transition.fadeIn(0.0, cfg.fade_in), fadeBg(pal));
-    egl_state.swapBuffers() catch |err| log.warn("initial swapBuffers error: {}", .{err});
-
-    // Bounded retries for a failed effect resize; see the resize block.
-    var resize_retries: u8 = 0;
-    // Set when the surface changed size, to force one re-derive of the cached
-    // window rects: they hold surface-space coordinates flipped about the old
-    // height, and a resize produces no watcher snapshot to trigger that.
-    var surface_resized = false;
+    try r.prime(&wl, sceneOf(&trans, &cached_windows, cached_window_count));
     // Workspace slide bookkeeping. `outgoing` is the window set of the
     // workspace being LEFT, captured at the switch and parked one span
     // behind the camera while the slide runs, so what slides out is what
@@ -414,23 +372,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
             if (should_exit.load(.acquire)) break;
             log.warn("Wayland dispatch error: {} — reconnecting in 1s", .{err});
             iohelp.sleepNs(1 * std.time.ns_per_s);
-            // Tear EGL down BEFORE reconnect, which destroys the wl_display
-            // the EGL surface is built on. Leaving it until afterwards means
-            // eglDestroySurface — from recreateGraphics on the way in, or from
-            // this function's own `defer` if the reconnect fails — walks into
-            // a freed display inside the driver's Wayland platform layer and
-            // segfaults. deinit is idempotent, so the later calls are no-ops.
-            egl_state.deinit();
+            // Tear the GL pipeline down BEFORE reconnect, which destroys the
+            // wl_display the EGL surface is built on. Leaving it until
+            // afterwards means eglDestroySurface — from the rebuild on the way
+            // in, or from this function's own `defer` if the reconnect fails —
+            // walks into a freed display inside the driver's Wayland platform
+            // layer and segfaults. release is idempotent.
+            r.release();
             wl.reconnect() catch |e2| {
                 log.err("Wayland reconnect failed: {} — exiting", .{e2});
                 return e2;
             };
-            recreateGraphics(allocator, &egl_state, &shader_prog, &effect, &cfg, &pal, &wl, shader_path_expanded) catch |e2| {
-                log.err("graphics reinit failed after Wayland reconnect: {} — exiting", .{e2});
-                return e2;
-            };
-            afterGraphicsReset(&wl, &surf_w, &surf_h, &surf_scale, &surface_resized, &resize_retries, &fade_start, &timer);
-            try primeSurface(&wl, &shader_prog, &egl_state, &effect, surf_w, surf_h, &trans, &cached_windows, cached_window_count, &cfg, pal);
+            try r.rebuild(&wl, sceneOf(&trans, &cached_windows, cached_window_count), timerSeconds(&timer), "Wayland reconnect");
             continue;
         };
 
@@ -439,9 +392,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
             if (!surface_lost) {
                 surface_lost = true;
                 lost_since = now_s;
-                // EGL first, for the same reason as in the reconnect path:
+                // GL first, for the same reason as in the reconnect path:
                 // the EGL surface sits on the wl_egl_window about to go.
-                egl_state.deinit();
+                r.release();
                 wl.destroySurface();
                 if (cfg.output_wait > 0) {
                     log.warn("output '{s}' lost — waiting up to {d:.0}s for it", .{ wl.targetName(), cfg.output_wait });
@@ -481,10 +434,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 },
                 else => return err,
             };
-            recreateGraphics(allocator, &egl_state, &shader_prog, &effect, &cfg, &pal, &wl, shader_path_expanded) catch |e2| {
-                log.err("graphics reinit failed after the output returned: {} — exiting", .{e2});
-                return e2;
-            };
+            try r.rebuild(&wl, sceneOf(&trans, &cached_windows, cached_window_count), timerSeconds(&timer), "output returned");
             // A moved daemon needs the watcher scoped to its new monitor;
             // for the same output the reinstall is idempotent and re-emits
             // the full state, which the fresh surface needs anyway.
@@ -492,53 +442,19 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 log.warn("watcher reinstall after output return failed: {} — the heartbeat check will retry", .{err});
             };
             last_install_attempt = timerSeconds(&timer);
-            afterGraphicsReset(&wl, &surf_w, &surf_h, &surf_scale, &surface_resized, &resize_retries, &fade_start, &timer);
-            try primeSurface(&wl, &shader_prog, &egl_state, &effect, surf_w, surf_h, &trans, &cached_windows, cached_window_count, &cfg, pal);
             surface_lost = false;
             log.info("output '{s}' is back — surface recreated at {d}x{d}", .{ wl.targetName(), wl.buffer_width, wl.buffer_height });
             continue;
         }
 
         if (wl.resize_pending or wl.scale_changed) {
-            const new_w: f32 = @floatFromInt(wl.buffer_width);
-            const new_h: f32 = @floatFromInt(wl.buffer_height);
-            // Rebuild on any change to the BUFFER size, not just a scale
-            // change. Effects capture their bounds at init — milkdrop sizes
-            // its FBOs, swarm its canvas — so a plain resolution change with
-            // the scale untouched would leave every one of them drawing at
-            // the old dimensions.
-            const dims_changed = new_w != surf_w or new_h != surf_h;
-            surf_w = new_w;
-            surf_h = new_h;
-            surf_scale = wl.scale();
-            // Window rects are cached in surface space, and the y-flip that
-            // produced them used the OLD height. Nothing else re-derives them:
-            // a resize emits no new watcher snapshot, so without this the
-            // rects stay flipped about the previous surface for as long as no
-            // window happens to move — every effect drawing them off by the
-            // difference between the two heights.
-            if (dims_changed) surface_resized = true;
-            if (dims_changed and !rebuildEffect(allocator, &effect, &cfg, surf_w, surf_h)) {
-                // A transient failure (an FBO allocation losing a race with
-                // something else on the GPU) would otherwise strand the effect
-                // at the old size for the life of the process, since nothing
-                // re-raises the flag. Retry on the next frames, bounded so a
-                // permanent failure does not spin.
-                if (resize_retries < 3) {
-                    resize_retries += 1;
-                    continue;
-                }
-                log.err("effect stuck at the old size after {d} attempts", .{resize_retries});
-            }
-            resize_retries = 0;
-            wl.resize_pending = false;
-            wl.scale_changed = false;
+            if (!r.resize(&wl)) continue;
         }
 
         if (config_watcher) |*cw| {
             if (cw.poll()) {
                 log.info("config changed, reloading", .{});
-                reloadConfig(allocator, &cfg, &effect, &shader_prog, &pal, &trans, &shader_path_expanded, surf_w, surf_h, mon.outputName()) catch |err| {
+                reloadConfig(allocator, &cfg, &r, &trans, mon.outputName()) catch |err| {
                     log.warn("reload failed: {}", .{err});
                 };
                 configureSlide(&slide, detected_anim, &cfg);
@@ -565,8 +481,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 cursor.y,
                 cached_snapshot.origin_x,
                 cached_snapshot.origin_y,
-                surf_h,
-                surf_scale,
+                r.height,
+                r.scale,
             );
             const raw_cursor = cached_cursor;
 
@@ -614,8 +530,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // every 16ms tick and pushes a fresh snapshot.
             const gen = events.snapshotGen();
             var force_snap = false;
-            if (focus_changed or gen != last_snapshot_gen or surface_resized or strip_dirty) {
-                surface_resized = false;
+            if (focus_changed or gen != last_snapshot_gen or r.rects_stale or strip_dirty) {
+                r.rects_stale = false;
                 strip_dirty = false;
                 if (gen != last_snapshot_gen) {
                     last_snapshot_gen = gen;
@@ -645,7 +561,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 }
                 const raw = strip.deriveRawState(
                     &cached_snapshot,
-                    strip.View.init(surf_w, surf_h, surf_scale, slide.axis),
+                    strip.View.init(r.width, r.height, r.scale, slide.axis),
                     cached_win_address,
                     if (slide.active) &outgoing else null,
                     if (slide.active) -@as(i8, @intFromFloat(slide.dir)) else 0,
@@ -671,7 +587,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // Sample the camera once per frame (it self-deactivates when
             // the easing settles); the focused-window rect and the strip
             // below reuse the same offset.
-            const span: f32 = if (slide.axis == .vertical) surf_h else surf_w;
+            const span: f32 = if (slide.axis == .vertical) r.height else r.width;
             const camera = slide.sample(time_f64, span);
             // Settled: swap the outgoing set back for the normal strip on
             // the next frame.
@@ -688,7 +604,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
             var raw_focus_win = cached_raw_win;
             {
-                const d = strip.animOffsetGl(&win_anims, cached_win_address, present_time, surf_scale);
+                const d = strip.animOffsetGl(&win_anims, cached_win_address, present_time, r.scale);
                 raw_focus_win.x += d.x;
                 raw_focus_win.y += d.y;
                 raw_focus_win.w += d.w;
@@ -704,7 +620,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // play at present_time.
             var anim_targets: [hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect = undefined;
             for (0..target_window_count) |i| {
-                anim_targets[i] = strip.animated(&win_anims, target_windows[i], present_time, surf_scale);
+                anim_targets[i] = strip.animated(&win_anims, target_windows[i], present_time, r.scale);
             }
 
             // Optional extra smoothing toward those (off by default)
@@ -776,7 +692,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             }
 
             // Update effect
-            effect.update(.{
+            r.fx().update(.{
                 .dt = dt,
                 .time = time,
                 .cursor = trans.current_cursor,
@@ -788,33 +704,34 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 .focused_class_len = cached_focused_class_len,
                 .focused_title = cached_focused_title,
                 .focused_title_len = cached_focused_title_len,
-                .palette = if (pal) |*p| p else null,
+                .palette = r.palette(),
                 .workspace_slide = slide.progress(time_f64),
                 .workspace_switches = workspace_switches,
                 .closed_windows = events.drainClosed(&closed_tail, &closed_buf),
             });
-            effect.upload(&shader_prog);
+            r.fx().upload(&r.prog);
 
-            const fade = transition.fadeIn(time_f64 - fade_start, cfg.fade_in);
-            drawFrame(&shader_prog, surf_w, surf_h, time, &trans, &cached_windows, cached_window_count, fade, fadeBg(pal));
+            const frame_scene = sceneOf(&trans, &cached_windows, cached_window_count);
+            r.draw(frame_scene, time, r.fadeAt(time_f64));
             try wl.requestFrame();
-            if (egl_state.swapBuffers()) |_| {
+            if (r.swap()) |_| {
                 swap_failures = 0;
             } else |err| {
-                if (err == error.EglContextLost) {
-                    log.warn("EGL context lost — reinitialising graphics", .{});
-                    try recreateGraphics(allocator, &egl_state, &shader_prog, &effect, &cfg, &pal, &wl, shader_path_expanded);
-                    afterGraphicsReset(&wl, &surf_w, &surf_h, &surf_scale, &surface_resized, &resize_retries, &fade_start, &timer);
-                    swap_failures = 0;
-                } else {
+                // A failed swap commits no buffer, so the frame callback just
+                // requested never fires: every rebuild path primes the new
+                // surface, which commits one.
+                const lost = err == error.EglContextLost;
+                if (!lost) {
                     swap_failures +|= 1;
                     log.warn("eglSwapBuffers error: {}", .{err});
-                    if (swap_failures >= 3) {
+                }
+                if (lost or swap_failures >= 3) {
+                    if (lost)
+                        log.warn("EGL context lost — reinitialising graphics", .{})
+                    else
                         log.warn("eglSwapBuffers failed {d}x in a row — reinitialising graphics", .{swap_failures});
-                        try recreateGraphics(allocator, &egl_state, &shader_prog, &effect, &cfg, &pal, &wl, shader_path_expanded);
-                        afterGraphicsReset(&wl, &surf_w, &surf_h, &surf_scale, &surface_resized, &resize_retries, &fade_start, &timer);
-                        swap_failures = 0;
-                    }
+                    try r.rebuild(&wl, frame_scene, timerSeconds(&timer), if (lost) "context lost" else "swap failures");
+                    swap_failures = 0;
                 }
             }
 
@@ -831,65 +748,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 }
 
-/// First frame on a fresh surface: draw and swap BEFORE waiting on a
-/// frame callback. A compositor sends no callbacks for a surface that has
-/// never committed a buffer, so requesting one first and then waiting for
-/// it in the loop deadlocks the daemon on a surface that never draws.
-/// Same order as the initial render at startup; the frame is the bare
-/// background (fade 0), which the fade then rises out of.
-fn primeSurface(
-    wl: *wayland.WaylandState,
-    shader_prog: *shader_mod.ShaderProgram,
-    egl_state: *egl_mod.EglState,
-    effect: *effects.Effect,
-    surf_w: f32,
-    surf_h: f32,
-    trans: *transition.TransitionState,
-    windows: *const [hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect,
-    window_count: u8,
-    cfg: *const config_mod.Config,
-    pal: ?palette_mod.Palette,
-) !void {
-    effect.upload(shader_prog);
-    try wl.requestFrame();
-    drawFrame(shader_prog, surf_w, surf_h, 0.0, trans, windows, window_count, transition.fadeIn(0.0, cfg.fade_in), fadeBg(pal));
-    egl_state.swapBuffers() catch |err| log.warn("first swapBuffers on the rebuilt surface failed: {}", .{err});
-}
-
 fn timerSeconds(timer: *iohelp.Timer) f64 {
     return @as(f64, @floatFromInt(timer.read())) / 1_000_000_000.0;
-}
-
-/// The color the launch fade starts from: the theme background, or a
-/// near-black when no theme is loaded.
-fn fadeBg(pal: ?palette_mod.Palette) [3]f32 {
-    if (pal) |p| return .{ p.background.r, p.background.g, p.background.b };
-    return .{ 0.02, 0.02, 0.02 };
-}
-
-/// Bookkeeping every graphics rebuild needs, whichever path triggered it:
-/// the surface may have new dimensions, the cached window rects are flipped
-/// about the old height, and the fresh pipeline fades in like a launch.
-fn afterGraphicsReset(
-    wl: *wayland.WaylandState,
-    surf_w: *f32,
-    surf_h: *f32,
-    surf_scale: *f32,
-    surface_resized: *bool,
-    resize_retries: *u8,
-    fade_start: *f64,
-    timer: *iohelp.Timer,
-) void {
-    surf_w.* = @floatFromInt(wl.buffer_width);
-    surf_h.* = @floatFromInt(wl.buffer_height);
-    surf_scale.* = wl.scale();
-    // The flags are consumed here; the effect was already rebuilt at the
-    // new size by recreateGraphics.
-    wl.resize_pending = false;
-    wl.scale_changed = false;
-    surface_resized.* = true;
-    resize_retries.* = 0;
-    fade_start.* = timerSeconds(timer);
 }
 
 const AwaitOutcome = union(enum) {
@@ -949,105 +809,6 @@ fn awaitOutput(
         // Events reset the backoff: a hotplug tends to come as a burst.
         poll_ms = if (got_events) 250 else @min(poll_ms * 2, 1000);
     }
-}
-
-/// Re-init the active effect at new dimensions, in place.
-///
-/// Never leaves `effect` holding a deinited value: the old context is only
-/// released once a replacement exists, so an error here cannot set up a
-/// double-deinit through main's `defer effect.deinit()`. On failure the
-/// existing effect keeps running at the old size, which is wrong but visible,
-/// rather than taking the wallpaper down.
-///
-/// The replacement is built from the LIVE union tag, not from `cfg.effect`:
-/// a `reloadConfig` that swapped the effect and then bailed before committing
-/// the config leaves those two disagreeing, and resolving by name would
-/// silently swap the running effect for a different one on the next resize.
-fn rebuildEffect(
-    allocator: std.mem.Allocator,
-    effect: *effects.Effect,
-    cfg: *const config_mod.Config,
-    w: f32,
-    h: f32,
-) bool {
-    const fresh = effects.Effect.init(effect.cliNameOf(), allocator, w, h, cfg) catch |err| {
-        log.warn("effect resize to {d}x{d} failed: {} — keeping the old size", .{ w, h, err });
-        return false;
-    };
-    effect.deinit();
-    effect.* = fresh;
-    return true;
-}
-
-/// Tear down and rebuild the GL pipeline: EGL state, shader program, and the
-/// effect. Used after a Wayland reconnect or an `EglContextLost`. The palette
-/// pointer is re-bound if present. Caller is responsible for any post-reinit
-/// work (surface dimensions, requestFrame).
-fn recreateGraphics(
-    allocator: std.mem.Allocator,
-    egl_state: *egl_mod.EglState,
-    shader_prog: *shader_mod.ShaderProgram,
-    effect: *effects.Effect,
-    cfg: *const config_mod.Config,
-    pal: *?palette_mod.Palette,
-    wl: *const wayland.WaylandState,
-    shader_path_expanded: []const u8,
-) !void {
-    egl_state.deinit();
-    shader_prog.deinit();
-    egl_state.* = try egl_mod.EglState.init(wl.display, wl.egl_window.?);
-    const new_frag = try loadShaderFile(allocator, shader_path_expanded);
-    defer allocator.free(new_frag);
-    shader_prog.* = try shader_mod.ShaderProgram.init(new_frag);
-    if (pal.*) |*p| shader_prog.setPalette(p);
-    // eglDestroyContext above invalidated every GL name, including the ones
-    // effects own themselves — milkdrop's FBO and textures, swarm's program.
-    // Re-uploading uniforms is not enough; those objects have to be rebuilt or
-    // the effect draws nothing until the daemon is restarted.
-    _ = rebuildEffect(allocator, effect, cfg, @floatFromInt(wl.buffer_width), @floatFromInt(wl.buffer_height));
-    effect.upload(shader_prog);
-}
-
-fn drawFrame(
-    prog: *shader_mod.ShaderProgram,
-    w: f32,
-    h: f32,
-    time: f32,
-    trans: *transition.TransitionState,
-    windows: *const [hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect,
-    window_count: u8,
-    fade: f32,
-    fade_bg: [3]f32,
-) void {
-    // Resolve focused / previously-focused window indices by address — reliable
-    // during motion where smoothed iWindow.xy lags behind raw positions.
-    var focused_index: i32 = -1;
-    var prev_index: i32 = -1;
-    for (0..window_count) |i| {
-        const addr = windows[i].address;
-        if (addr == 0) continue;
-        if (addr == trans.focused_address) focused_index = @intCast(i);
-        if (addr == trans.prev_focused_address) prev_index = @intCast(i);
-    }
-
-    prog.draw(.{
-        .width = w,
-        .height = h,
-        .time = time,
-        .mouse_x = trans.current_cursor[0],
-        .mouse_y = trans.current_cursor[1],
-        .win_x = trans.current_win.x,
-        .win_y = trans.current_win.y,
-        .win_w = trans.current_win.w,
-        .win_h = trans.current_win.h,
-        .transition = trans.transition_progress,
-        .windows = windows.*,
-        .window_count = window_count,
-        .focused_index = focused_index,
-        .prev_index = prev_index,
-        .fade = fade,
-        .fade_bg = fade_bg,
-    });
 }
 
 fn cacheWindows(
@@ -1167,19 +928,17 @@ fn applyCliOverrides(allocator: std.mem.Allocator, loaded: config_mod.Config, cl
     return cfg;
 }
 
+/// Hot-reload the TOML config. The renderer applies theme, effect and shader;
+/// the transition settings apply here. `cfg` is replaced only on success.
 fn reloadConfig(
     allocator: std.mem.Allocator,
     cfg: *config_mod.Config,
-    effect: *effects.Effect,
-    shader_prog: *shader_mod.ShaderProgram,
-    pal: *?palette_mod.Palette,
+    r: *renderer_mod.Renderer,
     trans: *transition.TransitionState,
-    current_shader_path: *[]const u8,
-    surf_w: f32,
-    surf_h: f32,
     active_output: []const u8,
 ) !void {
     var new_cfg = try config_mod.load(allocator, cfg.config_path);
+    errdefer config_mod.deinit(&new_cfg, allocator);
 
     trans.transition_duration = new_cfg.transition_duration;
     trans.cursor_smoothing = new_cfg.cursor_smoothing;
@@ -1195,84 +954,16 @@ fn reloadConfig(
             log.warn("output changed to '{s}' — restart hyprglaze to apply", .{want});
     }
 
-    // Theme change
-    if (!strEql(cfg.theme, new_cfg.theme)) {
-        if (new_cfg.theme) |theme_name| {
-            pal.* = palette_mod.loadTheme(allocator, theme_name) catch |err| {
-                config_mod.deinit(&new_cfg, allocator);
-                return err;
-            };
-            log.info("theme reloaded: {s}", .{theme_name});
-        } else {
-            pal.* = null;
-        }
-    }
-
-    // Reinit effect every reload so per-effect params ([particles], [buddy], etc.)
-    // pick up config changes even when the effect name itself is unchanged.
-    // Build the new effect before tearing down the old one (as
-    // rebuildEffect does): if it fails, the running effect stays intact
-    // instead of being left deinited and still drawn.
-    const effect_name_changed = !std.mem.eql(u8, cfg.effect, new_cfg.effect);
-    const fresh = effects.Effect.init(new_cfg.effect, allocator, surf_w, surf_h, &new_cfg) catch |err| {
-        log.warn("effect '{s}' failed: {} — keeping the current effect", .{ new_cfg.effect, err });
-        config_mod.deinit(&new_cfg, allocator);
-        return err;
-    };
-    effect.deinit();
-    effect.* = fresh;
-    if (effect_name_changed) {
-        log.info("effect switched: {s}", .{new_cfg.effect});
-    } else {
-        log.info("effect reloaded: {s}", .{new_cfg.effect});
-    }
-
-    // Shader — resolve from explicit config or effect default
-    const desired_shader = if (new_cfg.shader.len > 0) new_cfg.shader else effect.defaultShader();
-    const new_shader_path = config_mod.expandHome(allocator, desired_shader) catch |err| {
-        config_mod.deinit(&new_cfg, allocator);
-        return err;
-    };
-
-    if (!std.mem.eql(u8, new_shader_path, current_shader_path.*)) {
-        const new_source = loadShaderFile(allocator, new_shader_path) catch |err| {
-            allocator.free(new_shader_path);
-            config_mod.deinit(&new_cfg, allocator);
-            return err;
-        };
-        defer allocator.free(new_source);
-
-        var new_prog = shader_mod.ShaderProgram.init(new_source) catch |err| {
-            allocator.free(new_shader_path);
-            config_mod.deinit(&new_cfg, allocator);
-            return err;
-        };
-
-        if (pal.*) |*p| new_prog.setPalette(p);
-        shader_prog.deinit();
-        shader_prog.* = new_prog;
-        log.info("shader reloaded: {s}", .{new_shader_path});
-
-        allocator.free(current_shader_path.*);
-        current_shader_path.* = new_shader_path;
-    } else {
-        allocator.free(new_shader_path);
-        if (pal.*) |*p| shader_prog.setPalette(p);
-    }
+    try r.applyConfig(cfg, &new_cfg);
 
     config_mod.deinit(cfg, allocator);
     cfg.* = new_cfg;
 }
 
-fn strEql(a: ?[]const u8, b: ?[]const u8) bool {
-    if (a == null and b == null) return true;
-    if (a == null or b == null) return false;
-    return std.mem.eql(u8, a.?, b.?);
+fn sceneOf(
+    trans: *const transition.TransitionState,
+    windows: *const [hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect,
+    count: u8,
+) renderer_mod.Scene {
+    return .{ .trans = trans, .windows = windows, .window_count = count };
 }
-
-fn loadShaderFile(allocator: std.mem.Allocator, path: []const u8) ![:0]const u8 {
-    var resolve_buf: [512]u8 = undefined;
-    const resolved = iohelp.resolveDataPath(path, &resolve_buf) orelse path;
-    return iohelp.readFileAlloc0(allocator, resolved, 1024 * 1024);
-}
-

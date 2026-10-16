@@ -228,7 +228,7 @@ pub const ShaderProgram = struct {
 
     /// Idempotent: glDelete* on handle 0 is a spec'd no-op, and handles
     /// are zeroed after deletion so a double deinit (e.g. deferred cleanup
-    /// after a failed recreateGraphics) is harmless.
+    /// after a failed graphics rebuild) is harmless.
     pub fn deinit(self: *ShaderProgram) void {
         c.glDeleteVertexArrays(1, &self.vao);
         c.glDeleteProgram(self.program);

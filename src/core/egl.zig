@@ -86,7 +86,7 @@ pub const EglState = struct {
         };
     }
 
-    /// Idempotent: a second call is a no-op. recreateGraphics relies on
+    /// Idempotent: a second call is a no-op. Renderer.release relies on
     /// this — it tears down before rebuilding, and if the rebuild fails
     /// the deferred deinit in main() runs against the same struct.
     pub fn deinit(self: *EglState) void {

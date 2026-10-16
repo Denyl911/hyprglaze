@@ -312,6 +312,11 @@ pub const WaylandState = struct {
     }
 
     pub fn requestFrame(self: *WaylandState) !void {
+        // A graphics rebuild after a failed swap requests a second callback
+        // before the first fired. Only the newest is tracked (and destroyed
+        // with the surface), so drop the older one rather than leak it.
+        if (self.frame_callback) |old| c.wl_callback_destroy(old);
+        self.frame_callback = null;
         const callback = c.wl_surface_frame(self.surface) orelse return error.FrameCallbackFailed;
         if (c.wl_callback_add_listener(callback, &frame_listener, self) != 0)
             return error.FrameListenerFailed;

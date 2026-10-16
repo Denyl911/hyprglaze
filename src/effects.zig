@@ -72,17 +72,18 @@ pub const FrameState = struct {
 };
 
 /// The active desktop effect. Method contract for every variant Context:
-/// - `init` may be called WITHOUT a current GL context, so GL resource
-///   creation belongs in the first `upload` call (milkdrop is the lone
-///   exception and requires a current context at init; see the note in
-///   milkdrop/context.zig).
+/// - `init` never touches GL: it may run with no context current, or with
+///   one that is about to be destroyed (a graphics rebuild builds the
+///   replacement effect before tearing the old context down). GL resource
+///   creation belongs in the first `upload` call.
 /// - `update(state)` runs once per frame before rendering; it may assume a
 ///   monotonically advancing clock but nothing about GL. FrameState slices
 ///   are only valid during the call (see FrameState).
 /// - `upload(prog)` runs with the GL context current and pushes uniforms
 ///   (and any lazily created GL state) to the program.
 /// - `deinit` must release everything init/update/upload acquired,
-///   including stopping any background threads.
+///   including stopping any background threads. It runs with the context
+///   that created the effect's GL names still current.
 pub const Effect = union(enum) {
     particles: particles.Context,
     windowglow: windowglow.Context,
