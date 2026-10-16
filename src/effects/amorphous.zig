@@ -4,7 +4,6 @@ const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
 const iohelp = @import("../core/io_helper.zig");
 const palette_mod = @import("../core/palette.zig");
-const audio_mod = @import("visualizer/audio.zig");
 const spectral = @import("spectral.zig");
 
 const c = @cImport({
@@ -56,10 +55,9 @@ const drift_speed: f32 = 0.045;
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    audio: ?*audio_mod.AudioCapture,
+    music: spectral.Analyzer = .{},
     /// AGC'd six-band spectrum plus an energy envelope. Zero in silence or
     /// with music = false, so the blobs then behave exactly as unwired.
-    an: spectral.Bands = .{},
     size: f32,
     speed: f32,
     opacity: f32,
@@ -99,11 +97,10 @@ pub const Context = struct {
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
         const prng = std.Random.DefaultPrng.init(iohelp.nowNs());
-        var audio: ?*audio_mod.AudioCapture = null;
-        if (params.getBool("music", true)) audio = try audio_mod.spawn(allocator, params);
+        const music = try spectral.Analyzer.init(allocator, params);
         var self = Context{
             .allocator = allocator,
-            .audio = audio,
+            .music = music,
             .size = params.getFloat("size", 1.0),
             .speed = params.getFloat("speed", 1.0),
             .opacity = std.math.clamp(params.getFloat("opacity", 0.55), 0.0, 1.0),
@@ -345,7 +342,7 @@ pub const Context = struct {
                 // the core (a droplet), large ones let them reach out. Music
                 // loosens it: loud passages let even the droplets go lumpy,
                 // silence relaxes everything back to its resting shape.
-                const slack = @min(1.0, smoothstep(0.4, 2.0, size) + self.an.energy_ema * 0.9);
+                const slack = @min(1.0, smoothstep(0.4, 2.0, size) + self.music.bands.energy_ema * 0.9);
                 const body = self.bodies[layer * blobs + i];
                 const cx = body.x;
                 const cy = body.y;
@@ -362,7 +359,7 @@ pub const Context = struct {
                     // Each lobe rides one frequency band: the satellite
                     // reaches further out and swells as its band plays, so
                     // the outline is a slow radial equalizer.
-                    const band = self.an.smooth[j % 6];
+                    const band = self.music.bands.smooth[j % 6];
                     const off = R * (0.55 + 0.30 * @sin(tb * (0.31 + 0.05 * fj) + fj * 2.9)) * slack * (1.0 + band * 0.45);
                     const rad = R * (0.26 + 0.10 * @sin(tb * (0.27 + 0.06 * fj) + fj * 4.3)) * (0.5 + 0.5 * slack) * (1.0 + band * 0.35);
                     // No squashing against windows: snapping satellites to a
@@ -453,11 +450,7 @@ pub const Context = struct {
                 self.picked = true;
             }
         }
-        if (self.audio) |audio| {
-            const wave = audio.getWaveform();
-            const mags = spectral.magnitudes(&wave);
-            self.an.update(&mags, std.math.clamp(state.dt, 0.0, 0.05));
-        }
+        _ = self.music.update(std.math.clamp(state.dt, 0.0, 0.05));
         const dt = std.math.clamp(state.dt, 0.0, 0.1) * self.speed;
         self.step(dt, state.windows);
         self.animate(state.time * self.speed);
@@ -479,7 +472,7 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *Context) void {
-        if (self.audio) |audio| audio_mod.shutdown(audio, self.allocator);
+        self.music.deinit(self.allocator);
     }
 };
 

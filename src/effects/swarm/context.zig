@@ -3,7 +3,7 @@ const shader_mod = @import("../../core/shader.zig");
 const config_mod = @import("../../core/config.zig");
 const palette_mod = @import("../../core/palette.zig");
 const effects = @import("../../effects.zig");
-const audio_mod = @import("../visualizer/audio.zig");
+const audio_mod = @import("../audio.zig");
 const bands_mod = @import("../bands.zig");
 const boids_mod = @import("boids.zig");
 
@@ -202,7 +202,7 @@ const Accum = struct {
 };
 
 pub const Context = struct {
-    audio: *audio_mod.AudioCapture,
+    audio: ?*audio_mod.AudioCapture,
     sys: boids_mod.BoidSystem,
     allocator: std.mem.Allocator,
     accum: *Accum,
@@ -252,8 +252,8 @@ pub const Context = struct {
     loc_canvas: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
-        const audio = try audio_mod.spawn(allocator, params);
-        errdefer audio_mod.shutdown(audio, allocator);
+        const audio = try audio_mod.spawnIfMusic(allocator, params);
+        errdefer if (audio) |cap| audio_mod.shutdown(cap, allocator);
 
         const accum = try allocator.create(Accum);
         accum.* = std.mem.zeroes(Accum);
@@ -279,7 +279,7 @@ pub const Context = struct {
     pub fn update(self: *Context, state: effects.FrameState) void {
         const dt = @min(state.dt, 0.05);
         self.now += dt;
-        const wave = self.audio.getWaveform();
+        const wave = audio_mod.waveformOr0(self.audio);
 
         // 6 spectrum bands + beat detection (same as glitch.zig, bands.zig)
         const beat_hit = self.an.update(&wave, dt);
@@ -484,7 +484,7 @@ pub const Context = struct {
         if (self.canvas_tex != 0) c.glDeleteTextures(1, &self.canvas_tex);
         if (self.field_tex != 0) c.glDeleteTextures(1, &self.field_tex);
         if (self.compute) |*cp| cp.deinit();
-        audio_mod.shutdown(self.audio, self.allocator);
+        if (self.audio) |cap| audio_mod.shutdown(cap, self.allocator);
         self.allocator.destroy(self.accum);
     }
 };

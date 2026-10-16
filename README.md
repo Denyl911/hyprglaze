@@ -196,6 +196,7 @@ end_hour   = 24.0     # hour at which the tide is full
 
 [voltaic]
 arc_rate = 1.0        # ambient strike frequency multiplier
+# music = true        # beats drive discharges; false = no capture, ambient arcs only
 # sink = "..."        # PulseAudio monitor source (auto-detected by default)
 
 [moire]
@@ -203,6 +204,7 @@ count = 60            # wave sources / orbiting bodies (max 60)
 fuzz = true           # ring-grating moire field; false = comet dots + trails
 wavelength = 100.0    # px between wave crests
 grating = 4           # thin rings drawn per wavelength (1-12); more = finer moire
+# music = true        # bands swell the bodies, kicks pulse the field
 # sink = "..."        # PulseAudio monitor source (auto-detected by default)
 
 [flux]
@@ -214,6 +216,7 @@ music = true          # pulses quicken and flash with the music
 [ivy]
 growth = 1.0          # plant pace multiplier (growth and leaf lifetimes)
 brightness = 1.0      # foliage glow multiplier
+# music = true        # the garden breathes with the slow envelopes
 # sink = "..."        # PulseAudio monitor source (auto-detected by default)
 
 [swarm]
@@ -224,6 +227,7 @@ separation = 54.0     # bird spacing; larger means bigger formations
 mute = 0.55           # ink saturation: 0 = full palette color, 1 = greyscale
 pixel = 30.0          # block size in px; 1.0 = full-res smooth rendering
 contour = false       # true = topographic isoline mode instead of blocks
+# music = true        # beats send the hawk; silence settles the birds
 # sink = "..."        # PulseAudio monitor source (auto-detected by default)
 ```
 

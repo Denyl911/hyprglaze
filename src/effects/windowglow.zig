@@ -2,7 +2,6 @@ const std = @import("std");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
-const audio_mod = @import("visualizer/audio.zig");
 const spectral = @import("spectral.zig");
 
 const c = @cImport({
@@ -15,8 +14,7 @@ const c = @cImport({
 // music = false), which collapses the shader to the classic look.
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    audio: ?*audio_mod.AudioCapture,
-    an: spectral.Bands = .{},
+    music: spectral.Analyzer = .{},
     /// Film-grain amplitude (config: grain, 0 disables).
     grain: f32,
     /// Grain reseed clock: ~10fps at rest, treble drives it toward 24fps.
@@ -30,23 +28,18 @@ pub const Context = struct {
     loc_grain_t: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) !Context {
-        var audio: ?*audio_mod.AudioCapture = null;
-        if (params.getBool("music", true)) audio = try audio_mod.spawn(allocator, params);
+        const music = try spectral.Analyzer.init(allocator, params);
         return .{
             .allocator = allocator,
-            .audio = audio,
+            .music = music,
             .grain = std.math.clamp(params.getFloat("grain", 0.5), 0.0, 2.0),
         };
     }
 
     pub fn update(self: *Context, state: effects.FrameState) void {
         const dt = std.math.clamp(state.dt, 0.0, 0.05);
-        if (self.audio) |audio| {
-            const wave = audio.getWaveform();
-            const mags = spectral.magnitudes(&wave);
-            self.an.update(&mags, dt);
-        }
-        const treble = (self.an.smooth[4] + self.an.smooth[5]) * 0.5;
+        _ = self.music.update(dt);
+        const treble = self.music.treble();
         self.grain_clock += dt * (10.0 + @min(treble, 1.0) * 14.0);
     }
 
@@ -59,13 +52,13 @@ pub const Context = struct {
             self.loc_grain = c.glGetUniformLocation(prog.program, "iGlowGrain");
             self.loc_grain_t = c.glGetUniformLocation(prog.program, "iGlowGrainT");
         }
-        if (self.loc_energy >= 0) c.glUniform1f(self.loc_energy, self.an.energy_ema);
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
+        if (self.loc_energy >= 0) c.glUniform1f(self.loc_energy, self.music.bands.energy_ema);
+        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
         if (self.loc_grain >= 0) c.glUniform1f(self.loc_grain, self.grain);
         if (self.loc_grain_t >= 0) c.glUniform1f(self.loc_grain_t, @floatCast(self.grain_clock));
     }
 
     pub fn deinit(self: *Context) void {
-        if (self.audio) |audio| audio_mod.shutdown(audio, self.allocator);
+        self.music.deinit(self.allocator);
     }
 };

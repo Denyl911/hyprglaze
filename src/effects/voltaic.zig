@@ -3,7 +3,7 @@ const clock = @import("clock.zig");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
-const audio_mod = @import("visualizer/audio.zig");
+const audio_mod = @import("audio.zig");
 const bands_mod = @import("bands.zig");
 
 const c = @cImport({
@@ -153,7 +153,7 @@ fn perimeterPoint(rect: anytype, t: f32) [2]f32 {
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    audio: *audio_mod.AudioCapture,
+    audio: ?*audio_mod.AudioCapture,
     rng: std.Random.DefaultPrng,
 
     width: f32,
@@ -215,7 +215,7 @@ pub const Context = struct {
     loc_ghost_start: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
-        const audio = try audio_mod.spawn(allocator, params);
+        const audio = try audio_mod.spawnIfMusic(allocator, params);
 
         return .{
             .allocator = allocator,
@@ -430,7 +430,7 @@ pub const Context = struct {
 
         // ---- audio analysis (same band split as glitch/swarm) ----
         // Band split + beat detection (spectral flux on bass), see bands.zig.
-        const wave = self.audio.getWaveform();
+        const wave = audio_mod.waveformOr0(self.audio);
         const beat_hit = self.an.update(&wave, dt);
 
         // Slow energy envelope + asymmetric storm ramp: choruses snap the
@@ -769,6 +769,6 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *Context) void {
-        audio_mod.shutdown(self.audio, self.allocator);
+        if (self.audio) |cap| audio_mod.shutdown(cap, self.allocator);
     }
 };

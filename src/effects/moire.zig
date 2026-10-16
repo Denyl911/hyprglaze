@@ -2,7 +2,7 @@ const std = @import("std");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
-const audio_mod = @import("visualizer/audio.zig");
+const audio_mod = @import("audio.zig");
 const bands_mod = @import("bands.zig");
 
 const c = @cImport({
@@ -74,7 +74,7 @@ const Mass = struct {
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    audio: *audio_mod.AudioCapture,
+    audio: ?*audio_mod.AudioCapture,
     rng: std.Random.DefaultPrng,
 
     width: f32,
@@ -127,7 +127,7 @@ pub const Context = struct {
     loc_vel: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
-        const audio = try audio_mod.spawn(allocator, params);
+        const audio = try audio_mod.spawnIfMusic(allocator, params);
 
         const count: u32 = @intCast(std.math.clamp(params.getInt("count", max_bodies), 0, max_bodies));
 
@@ -217,7 +217,7 @@ pub const Context = struct {
         const dt = std.math.clamp(state.dt, 0.0, 0.033);
 
         // Bass envelope — drives per-body size breathing in upload.
-        const wave = self.audio.getWaveform();
+        const wave = audio_mod.waveformOr0(self.audio);
         var energy: f32 = 0;
         for (0..25) |j| energy += @abs(wave[j]) + @abs(wave[128 + j]);
         const raw = (energy / 50.0) * 6.0;
@@ -417,6 +417,6 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *Context) void {
-        audio_mod.shutdown(self.audio, self.allocator);
+        if (self.audio) |cap| audio_mod.shutdown(cap, self.allocator);
     }
 };

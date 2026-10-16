@@ -2,7 +2,7 @@ const std = @import("std");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
-const audio_mod = @import("visualizer/audio.zig");
+const audio_mod = @import("audio.zig");
 
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
@@ -52,8 +52,7 @@ pub const Context = struct {
     loc_grain: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) !Context {
-        var audio: ?*audio_mod.AudioCapture = null;
-        if (params.getBool("music", true)) audio = try audio_mod.spawn(allocator, params);
+        const audio = try audio_mod.spawnIfMusic(allocator, params);
         return .{
             .allocator = allocator,
             .audio = audio,

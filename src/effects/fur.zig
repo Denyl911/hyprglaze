@@ -2,7 +2,6 @@ const std = @import("std");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
-const audio_mod = @import("visualizer/audio.zig");
 const spectral = @import("spectral.zig");
 
 const c = @cImport({
@@ -22,9 +21,7 @@ const c = @cImport({
 // snaps the grain.
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    audio: ?*audio_mod.AudioCapture,
-    an: spectral.Bands = .{},
-    onset: spectral.Onset = .{},
+    music: spectral.Analyzer = .{},
 
     flow: f64 = 0,
 
@@ -45,11 +42,10 @@ pub const Context = struct {
     loc_bright: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) !Context {
-        var audio: ?*audio_mod.AudioCapture = null;
-        if (params.getBool("music", true)) audio = try audio_mod.spawn(allocator, params);
+        const music = try spectral.Analyzer.init(allocator, params);
         return .{
             .allocator = allocator,
-            .audio = audio,
+            .music = music,
             .cell = std.math.clamp(params.getFloat("spacing", 23.0), 4.0, 60.0),
             .length = std.math.clamp(params.getFloat("length", 30.0), 2.0, 200.0),
             .brightness = std.math.clamp(params.getFloat("brightness", 1.0), 0.0, 3.0),
@@ -58,13 +54,8 @@ pub const Context = struct {
 
     pub fn update(self: *Context, state: effects.FrameState) void {
         const dt = std.math.clamp(state.dt, 0.0, 0.05);
-        if (self.audio) |audio| {
-            const wave = audio.getWaveform();
-            const mags = spectral.magnitudes(&wave);
-            self.an.update(&mags, dt);
-            self.onset.update(&mags, dt, self.an.bands[0]);
-        }
-        self.flow += dt * (0.25 + self.an.energy_ema * 0.65);
+        _ = self.music.update(dt);
+        self.flow += dt * (0.25 + self.music.bands.energy_ema * 0.65);
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
@@ -79,14 +70,14 @@ pub const Context = struct {
             self.loc_bright = c.glGetUniformLocation(prog.program, "iFurBright");
         }
         if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);
+        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
+        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.onset.beat);
         if (self.loc_cell >= 0) c.glUniform1f(self.loc_cell, self.cell);
         if (self.loc_len >= 0) c.glUniform1f(self.loc_len, self.length);
         if (self.loc_bright >= 0) c.glUniform1f(self.loc_bright, self.brightness);
     }
 
     pub fn deinit(self: *Context) void {
-        if (self.audio) |audio| audio_mod.shutdown(audio, self.allocator);
+        self.music.deinit(self.allocator);
     }
 };

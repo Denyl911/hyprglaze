@@ -2,7 +2,7 @@ const std = @import("std");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
-const audio_mod = @import("visualizer/audio.zig");
+const audio_mod = @import("audio.zig");
 const bands_mod = @import("bands.zig");
 
 const c = @cImport({

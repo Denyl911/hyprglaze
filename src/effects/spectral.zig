@@ -8,6 +8,8 @@
 //! with per-band auto-gain. Grown in whorl, extracted for reuse.
 
 const std = @import("std");
+const audio_mod = @import("audio.zig");
+const config_mod = @import("../core/config.zig");
 
 pub const fft_n = 128;
 pub const n_bins = fft_n / 2 + 1;
@@ -83,7 +85,9 @@ pub fn magnitudes(wave: *const [256]f32) [n_bins]f32 {
 /// mean + 2*sigma threshold over the trailing ~1.6s and a 1.5x-mean
 /// relative floor (immune to sigma collapse in steady loud passages).
 /// `beat` snaps to 1 on a hit and decays ~200ms — zero in silence.
+/// `k_sigma` is the sigma multiple a kick must clear (whorl exposes it).
 pub const Onset = struct {
+    k_sigma: f32 = 2.0,
     spec_prev: [n_bins]f32 = [_]f32{0} ** n_bins,
     hist: [96]f32 = [_]f32{0} ** 96,
     pos: usize = 0,
@@ -91,7 +95,8 @@ pub const Onset = struct {
     cooldown: f32 = 0,
     beat: f32 = 0,
 
-    pub fn update(self: *Onset, mags: *const [n_bins]f32, dt: f32, sub_level: f32) void {
+    /// Returns true on the frame a kick fires.
+    pub fn update(self: *Onset, mags: *const [n_bins]f32, dt: f32, sub_level: f32) bool {
         var flux: f32 = 0;
         for (1..5) |k| {
             const d = std.math.log1p(mags[k]) - std.math.log1p(self.spec_prev[k]);
@@ -111,16 +116,19 @@ pub const Onset = struct {
         self.cooldown -= dt;
         const rising = flux > self.flux_last;
         self.flux_last = flux;
+        var hit = false;
         if (self.cooldown <= 0 and rising and
-            flux > mean + 2.0 * sigma and
+            flux > mean + self.k_sigma * sigma and
             flux > mean * 1.5 and
             flux > 0.015 and sub_level > 0.25)
         {
             self.cooldown = 0.18;
             self.beat = 1.0;
+            hit = true;
         }
         self.beat *= @exp(-5.0 * dt);
         if (self.beat < 0.01) self.beat = 0;
+        return hit;
     }
 };
 
@@ -148,5 +156,47 @@ pub const Bands = struct {
         const energy = (self.bands[0] + self.bands[1] + self.bands[2] +
             self.bands[3] + self.bands[4] + self.bands[5]) / 6.0;
         self.energy_ema += (energy - self.energy_ema) * @min(1.0, 2.0 * dt);
+    }
+};
+
+/// The front-end most audio effects share: optional capture (the effect's
+/// `music` setting, default on), the six bands and the kick detector.
+/// Without capture nothing updates and every value stays zero, which each
+/// effect treats as its no-music look.
+pub const Analyzer = struct {
+    audio: ?*audio_mod.AudioCapture = null,
+    bands: Bands = .{},
+    onset: Onset = .{},
+
+    pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) !Analyzer {
+        return .{ .audio = try audio_mod.spawnIfMusic(allocator, params) };
+    }
+
+    /// Analyse this frame's capture. Returns true on the frame a kick fires.
+    pub fn update(self: *Analyzer, dt: f32) bool {
+        const audio = self.audio orelse return false;
+        const wave = audio.getWaveform();
+        const mags = magnitudes(&wave);
+        self.bands.update(&mags, dt);
+        return self.onset.update(&mags, dt, self.bands.bands[0]);
+    }
+
+    pub fn deinit(self: *Analyzer, allocator: std.mem.Allocator) void {
+        if (self.audio) |audio| audio_mod.shutdown(audio, allocator);
+        self.audio = null;
+    }
+
+    /// Smoothed low end (sub + bass bands).
+    pub fn bass(self: *const Analyzer) f32 {
+        return (self.bands.smooth[0] + self.bands.smooth[1]) * 0.5;
+    }
+
+    /// Smoothed top end (high-mid + treble bands).
+    pub fn treble(self: *const Analyzer) f32 {
+        return (self.bands.smooth[4] + self.bands.smooth[5]) * 0.5;
+    }
+
+    pub fn beat(self: *const Analyzer) f32 {
+        return self.onset.beat;
     }
 };

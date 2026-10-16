@@ -3,7 +3,6 @@ const clock = @import("../clock.zig");
 const shader_mod = @import("../../core/shader.zig");
 const config_mod = @import("../../core/config.zig");
 const effects = @import("../../effects.zig");
-const audio_mod = @import("../visualizer/audio.zig");
 const spectral = @import("../spectral.zig");
 const trace = @import("trace.zig");
 
@@ -43,10 +42,7 @@ const Beam = struct {
 /// fast on the high one; bass kicks fire pulses down the low beam.
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    audio: ?*audio_mod.AudioCapture,
-    an: spectral.Bands = .{},
-    onset: spectral.Onset = .{},
-    beat_prev: f32 = 0,
+    music: spectral.Analyzer = .{},
     /// Strength of the music response; 0 = none.
     react: f32,
     /// Travelling-wave phase per beam, accumulated so a change in energy
@@ -87,8 +83,7 @@ pub const Context = struct {
     loc_react: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
-        var audio: ?*audio_mod.AudioCapture = null;
-        if (params.getBool("music", true)) audio = try audio_mod.spawn(allocator, params);
+        const music = try spectral.Analyzer.init(allocator, params);
         // GL space is y-up: "bottom" is y = 0.
         const corner = params.getString("corner", "bottom-left") orelse "bottom-left";
         const inset: f32 = 2.0;
@@ -100,7 +95,7 @@ pub const Context = struct {
         const centre: [2]f32 = .{ width * 0.5, height * 0.5 };
         return .{
             .allocator = allocator,
-            .audio = audio,
+            .music = music,
             .react = std.math.clamp(params.getFloat("react", 1.0), 0.0, 3.0),
             .width = width,
             .height = height,
@@ -123,8 +118,8 @@ pub const Context = struct {
     /// (bands 0-1) for the first beam, the highs (4-5) for the second.
     fn bandEnergy(self: *const Context) [2]f32 {
         return .{
-            (self.an.smooth[0] + self.an.smooth[1]) * 0.5 * self.react,
-            (self.an.smooth[4] + self.an.smooth[5]) * 0.5 * self.react,
+            self.music.bass() * self.react,
+            self.music.treble() * self.react,
         };
     }
 
@@ -136,17 +131,10 @@ pub const Context = struct {
         const dt = std.math.clamp(state.dt, 0.0, 0.1);
         self.now += dt;
 
-        if (self.audio) |audio| {
-            const wave = audio.getWaveform();
-            const mags = spectral.magnitudes(&wave);
-            self.an.update(&mags, @min(dt, 0.05));
-            self.onset.update(&mags, @min(dt, 0.05), self.an.bands[0]);
-            // A kick launches a pulse from the low beam's emitter.
-            if (self.onset.beat > self.beat_prev) {
-                self.pulses[self.next_pulse] = 0;
-                self.next_pulse = (self.next_pulse + 1) % max_pulses;
-            }
-            self.beat_prev = self.onset.beat;
+        // A kick launches a pulse from the low beam's emitter.
+        if (self.music.update(@min(dt, 0.05))) {
+            self.pulses[self.next_pulse] = 0;
+            self.next_pulse = (self.next_pulse + 1) % max_pulses;
         }
         for (&self.pulses) |*age| age.* = @min(age.* + dt, pulse_life);
         // The waves run faster as their band gets louder: slow undulation
@@ -228,7 +216,7 @@ pub const Context = struct {
         const e = self.bandEnergy();
         if (self.loc_band >= 0) c.glUniform2f(self.loc_band, e[0], e[1]);
         if (self.loc_phase >= 0) c.glUniform2f(self.loc_phase, self.phase[0], self.phase[1]);
-        if (self.loc_react >= 0) c.glUniform1f(self.loc_react, if (self.audio != null) self.react else 0.0);
+        if (self.loc_react >= 0) c.glUniform1f(self.loc_react, if (self.music.audio != null) self.react else 0.0);
         if (self.loc_pulse >= 0) {
             // Pulse age as a fraction of its life; 1 = idle.
             var ages: [max_pulses]f32 = undefined;
@@ -238,6 +226,6 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *Context) void {
-        if (self.audio) |audio| audio_mod.shutdown(audio, self.allocator);
+        self.music.deinit(self.allocator);
     }
 };

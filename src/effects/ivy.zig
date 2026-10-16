@@ -3,7 +3,6 @@ const clock = @import("clock.zig");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
-const audio_mod = @import("visualizer/audio.zig");
 const spectral = @import("spectral.zig");
 const bands_mod = @import("bands.zig");
 
@@ -252,7 +251,6 @@ fn perimeterAt(rect: anytype, t: f32) PerimHit {
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    audio: *audio_mod.AudioCapture,
     rng: std.Random.DefaultPrng,
 
     width: f32,
@@ -304,9 +302,7 @@ pub const Context = struct {
 
     // Audio analysis: shared spectral front-end (real FFT bands + AGC).
     // Only the SLOW envelopes drive the garden — it breathes, never twitches.
-    an: spectral.Bands = .{},
-    onset: spectral.Onset = .{},
-    beat_prev: f32 = 0,
+    music: spectral.Analyzer = .{},
 
     growth: f32 = 1.0,
     brightness: f32 = 1.0,
@@ -328,8 +324,8 @@ pub const Context = struct {
     loc_bright: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
-        const audio = try audio_mod.spawn(allocator, params);
-        errdefer audio_mod.shutdown(audio, allocator);
+        var music = try spectral.Analyzer.init(allocator, params);
+        errdefer music.deinit(allocator);
 
         const gw: usize = @intFromFloat(@ceil(@max(width, 1.0) / cell_px));
         const gh: usize = @intFromFloat(@ceil(@max(height, 1.0) / cell_px));
@@ -371,7 +367,7 @@ pub const Context = struct {
 
         return .{
             .allocator = allocator,
-            .audio = audio,
+            .music = music,
             .rng = std.Random.DefaultPrng.init(0x697679), // "ivy"
             .width = width,
             .height = height,
@@ -538,7 +534,7 @@ pub const Context = struct {
     /// by an organic meander, swaying more toward the free tip.
     fn trunkPoint(self: *const Context, rect: WindowRect, v: *const Vine, s: f32) [2]f32 {
         const hit = perimeterAt(rect, v.t0 + v.dir * s);
-        const sway_amp = (1.5 + self.an.energy_ema * 3.0) * @min(s / 140.0, 1.0);
+        const sway_amp = (1.5 + self.music.bands.energy_ema * 3.0) * @min(s / 140.0, 1.0);
         // Three incommensurate meander frequencies with a per-vine
         // amplitude so no two vines wander with the same rhythm.
         const amp_v = 0.8 + fhash(v.seed, 0.29) * 0.5;
@@ -561,7 +557,7 @@ pub const Context = struct {
         const px = -uy;
         const py = ux;
         const bend = (@mod(v.seed * 0.37, 1.0) - 0.5) * 2.0 * 0.0032;
-        const sway_amp = (1.5 + self.an.energy_ema * 3.0) * @min(s / 90.0, 1.0);
+        const sway_amp = (1.5 + self.music.bands.energy_ema * 3.0) * @min(s / 90.0, 1.0);
         const off = @sin(s * 0.05 + v.seed * 3.0) * 7.0 +
             @sin(s * 0.013 + v.seed * 1.3) * 16.0 * (s / @max(v.reach, 1.0)) +
             bend * s * s +
@@ -991,7 +987,7 @@ pub const Context = struct {
             // Silence -> a slow creep; music feeds the garden. Each vine has
             // its own vigor so the canopy fills in unevenly, like a plant.
             const vigor = 0.75 + fhash(v.seed, 0.53) * 0.5;
-            self.extend(i, dt * self.growth * tend * vigor * (16.0 + self.an.energy_ema * 40.0));
+            self.extend(i, dt * self.growth * tend * vigor * (16.0 + self.music.bands.energy_ema * 40.0));
             if (v.halted) continue;
 
             // Forking: trunks put out a shoot behind the tip every
@@ -1047,12 +1043,7 @@ pub const Context = struct {
         const r = self.rng.random();
 
         // ---- audio analysis: real FFT bands, adaptive onset ----
-        const wave = self.audio.getWaveform();
-        const mags = spectral.magnitudes(&wave);
-        self.an.update(&mags, dt);
-        self.onset.update(&mags, dt, self.an.bands[0]);
-        const beat_hit = self.onset.beat > self.beat_prev;
-        self.beat_prev = self.onset.beat;
+        const beat_hit = self.music.update(dt);
 
         // ---- cache windows + focused center ----
         self.win_cache_count = 0;
@@ -1260,7 +1251,7 @@ pub const Context = struct {
             // A dying (or senescent) leaf stops fluttering with the music.
             const still = @max(lam, turn_droop);
             const flutter = @sin(clock.phase(self.now, 1.6) + ls_e * 0.3 + v.seed) *
-                (0.08 + (self.an.smooth[4] + self.an.smooth[5]) * 0.5 * 0.12) * (1.0 - still);
+                (0.08 + self.music.treble() * 0.12) * (1.0 - still);
             // Each regrown leaf sits a little differently from the last.
             const gen_jit = if (gen_n >= 1) (fhash(v.seed + gen_n * 7.1, fi) - 0.5) * 0.4 else 0.0;
             var angle = tang + side * (0.75 + fhash(v.seed + 3.0, fi) * 0.55) + (jit - 0.5) * 0.5 + flutter + gen_jit;
@@ -1269,7 +1260,7 @@ pub const Context = struct {
             // older nodes carry big mature leaves.
             const mature = 0.5 + 0.5 * smoothstep(0.0, 140.0, v.dl - ls_e);
             const vary = 0.75 + fhash(v.seed + 7.0 + gen_n, fi) * 0.5;
-            const band = self.an.smooth[@as(usize, @intFromFloat(ls_e)) % 6];
+            const band = self.music.bands.smooth[@as(usize, @intFromFloat(ls_e)) % 6];
             var size = (11.5 + @sin(v.seed * 3.0 + ls_e * 0.7) * 3.5) * vary * mature * grow_in * regrow * (1.0 + band * 0.08) * end_fade;
             if (still > 0) {
                 // Wilting: the petiole loses grip, so the blade droops
@@ -1433,14 +1424,14 @@ pub const Context = struct {
         // Effect-local time (fire.zig pattern) — keeps shader noise
         // coordinates small so f32 precision holds over long sessions.
         if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
-        if (self.loc_treble >= 0) c.glUniform1f(self.loc_treble, (self.an.smooth[4] + self.an.smooth[5]) * 0.5);
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);
+        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
+        if (self.loc_treble >= 0) c.glUniform1f(self.loc_treble, self.music.treble());
+        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.onset.beat);
         if (self.loc_bright >= 0) c.glUniform1f(self.loc_bright, self.brightness);
     }
 
     pub fn deinit(self: *Context) void {
-        audio_mod.shutdown(self.audio, self.allocator);
+        self.music.deinit(self.allocator);
         if (self.tex_prims != 0) {
             c.glDeleteTextures(1, &self.tex_prims);
             c.glDeleteTextures(1, &self.tex_tiles);

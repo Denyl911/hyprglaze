@@ -2,7 +2,6 @@ const std = @import("std");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
-const audio_mod = @import("visualizer/audio.zig");
 const spectral = @import("spectral.zig");
 
 const c = @cImport({
@@ -24,14 +23,11 @@ const c = @cImport({
 // stone's angle.
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    audio: ?*audio_mod.AudioCapture,
-    an: spectral.Bands = .{},
-    onset: spectral.Onset = .{},
+    music: spectral.Analyzer = .{},
 
     /// Light-sweep angle, and the decaying angular kick a beat adds to it.
     turn: f64 = 0,
     turn_vel: f32 = 0,
-    beat_prev: f32 = 0,
 
     dispersion: f32,
     brightness: f32,
@@ -45,11 +41,10 @@ pub const Context = struct {
     loc_bright: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) !Context {
-        var audio: ?*audio_mod.AudioCapture = null;
-        if (params.getBool("music", true)) audio = try audio_mod.spawn(allocator, params);
+        const music = try spectral.Analyzer.init(allocator, params);
         return .{
             .allocator = allocator,
-            .audio = audio,
+            .music = music,
             .dispersion = std.math.clamp(params.getFloat("dispersion", 1.0), 0.0, 4.0),
             .brightness = std.math.clamp(params.getFloat("brightness", 1.0), 0.0, 3.0),
         };
@@ -57,18 +52,10 @@ pub const Context = struct {
 
     pub fn update(self: *Context, state: effects.FrameState) void {
         const dt = std.math.clamp(state.dt, 0.0, 0.05);
-        if (self.audio) |audio| {
-            const wave = audio.getWaveform();
-            const mags = spectral.magnitudes(&wave);
-            self.an.update(&mags, dt);
-            self.onset.update(&mags, dt, self.an.bands[0]);
-        }
-
-        const beat_hit = self.onset.beat > self.beat_prev;
-        self.beat_prev = self.onset.beat;
-        if (beat_hit) self.turn_vel += 2.4 * std.math.clamp(self.onset.beat, 0.0, 1.5);
+        const beat_hit = self.music.update(dt);
+        if (beat_hit) self.turn_vel += 2.4 * std.math.clamp(self.music.onset.beat, 0.0, 1.5);
         self.turn_vel *= @exp(-3.0 * dt);
-        self.turn += dt * (0.20 + self.an.energy_ema * 0.75 + self.turn_vel);
+        self.turn += dt * (0.20 + self.music.bands.energy_ema * 0.75 + self.turn_vel);
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
@@ -83,14 +70,14 @@ pub const Context = struct {
             self.loc_bright = c.glGetUniformLocation(prog.program, "iCrysBright");
         }
         if (self.loc_turn >= 0) c.glUniform1f(self.loc_turn, @floatCast(self.turn));
-        if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.an.smooth[0]);
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);
+        if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.music.bands.smooth[0]);
+        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
+        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.onset.beat);
         if (self.loc_disp >= 0) c.glUniform1f(self.loc_disp, self.dispersion);
         if (self.loc_bright >= 0) c.glUniform1f(self.loc_bright, self.brightness);
     }
 
     pub fn deinit(self: *Context) void {
-        if (self.audio) |audio| audio_mod.shutdown(audio, self.allocator);
+        self.music.deinit(self.allocator);
     }
 };

@@ -2,7 +2,6 @@ const std = @import("std");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
-const audio_mod = @import("visualizer/audio.zig");
 
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
@@ -11,10 +10,7 @@ const c = @cImport({
 const log = std.log.scoped(.whorl);
 
 const spectral = @import("spectral.zig");
-const band_edges = spectral.band_edges;
 
-/// Trailing flux window for the adaptive onset threshold (~1.6s at 60fps).
-const flux_hist_len = 96;
 
 // Cyclic cellular automaton (the classic "demons"). N states form a ring;
 // a cell in state s flips to s+1 when enough neighbors already carry s+1.
@@ -38,8 +34,8 @@ const max_catchup = 3;
 pub const Context = struct {
     allocator: std.mem.Allocator,
     rng: std.Random.DefaultPrng,
-    /// Optional system-audio capture (music = false skips it entirely).
-    audio: ?*audio_mod.AudioCapture,
+    /// Capture, bands and kick detector (music = false skips capture).
+    music: spectral.Analyzer = .{},
 
     width: f32,
     height: f32,
@@ -79,31 +75,9 @@ pub const Context = struct {
     vignette: f32,
     scanbar: f32,
 
-    // -- audio analysis (glitch.zig band split) --
-    bands: [6]f32 = [_]f32{0} ** 6,
-    bass: f32 = 0,
-    treble: f32 = 0,
-    bass_smooth: f32 = 0,
-    treble_smooth: f32 = 0,
-    energy_ema: f32 = 0,
-    /// Kick strictness multiplier (config: kick_threshold, higher =
-    /// fewer detections). Scales the adaptive sigma threshold.
-    kick_thresh: f32,
-    /// Previous frame's magnitude spectrum, for spectral flux.
-    spec_prev: [65]f32 = [_]f32{0} ** 65,
-    /// Slow per-band peaks for auto-gain (volume independence).
-    band_peak: [6]f32 = [_]f32{0} ** 6,
-    /// Trailing onset-strength window for the mean + k*sigma threshold.
-    flux_hist: [flux_hist_len]f32 = [_]f32{0} ** flux_hist_len,
-    flux_pos: usize = 0,
-    /// Previous frame's onset strength, for rising-edge peak-picking.
-    flux_last: f32 = 0,
     /// Detector telemetry: kicks since the last 20s log line.
     beat_count: u32 = 0,
     log_timer: f32 = 0,
-    beat_cooldown: f32 = 0,
-    /// Beat envelope: snaps to 1 on a detected downbeat, decays fast.
-    beat: f32 = 0,
     /// Conduction gates — music wired into the CA rule itself. The state
     /// ring is split into six segments, one per frequency band in order
     /// (sub-bass owns the first states, high treble the last): a flip INTO
@@ -113,7 +87,6 @@ pub const Context = struct {
     /// Beats briefly open every gate (one surge in rhythm). 1.0 = open
     /// (music off), 0.10 floor = ambient drift in silence.
     gates: [6]f32 = [_]f32{1.0} ** 6,
-    bands_smooth: [6]f32 = [_]f32{0} ** 6,
     /// Mid-density excitability: probability that a near-miss cell
     /// (threshold-1 neighbors) fires anyway. Thick mids fatten the waves.
     soft: f32 = 0,
@@ -195,13 +168,14 @@ pub const Context = struct {
         const sim_hz = std.math.clamp(params.getFloat("sim_hz", 14.0), 1.0, 60.0);
         const trail = std.math.clamp(params.getFloat("trail", 2.5), 1.0, 20.0);
 
-        var audio: ?*audio_mod.AudioCapture = null;
-        if (params.getBool("music", true)) audio = try audio_mod.spawn(allocator, params);
+        var music = try spectral.Analyzer.init(allocator, params);
+        // kick_threshold scales the onset's sigma test (2 sigma at 1.0).
+        music.onset.k_sigma = 2.0 * std.math.clamp(params.getFloat("kick_threshold", 1.0), 0.3, 4.0);
 
         return .{
             .allocator = allocator,
             .rng = rng,
-            .audio = audio,
+            .music = music,
             .width = width,
             .height = height,
             .cell_px = cell_px,
@@ -215,7 +189,6 @@ pub const Context = struct {
             .stir = params.getBool("stir", false),
             .stir_radius = std.math.clamp(params.getFloat("stir_radius", 2.2), 0.5, 8.0),
             .wall_inset = std.math.clamp(params.getFloat("wall_inset", 2.0), 0.0, 32.0),
-            .kick_thresh = std.math.clamp(params.getFloat("kick_threshold", 1.0), 0.3, 4.0),
             .accent = @floatFromInt(std.math.clamp(params.getInt("accent", 1), -1, 15)),
             .accent2 = @floatFromInt(std.math.clamp(params.getInt("accent2", 2), -1, 15)),
             .misconv = std.math.clamp(params.getFloat("misconverge", 1.5), 0.0, 8.0),
@@ -433,79 +406,9 @@ pub const Context = struct {
         const dt = std.math.clamp(state.dt, 0.0, 0.05);
         self.now += dt;
 
-        // ---- audio analysis: real FFT bands + spectral-flux onset ----
-        // Stays inline rather than using spectral.zig (which was extracted
-        // from this code): the onset here has a configurable kick_threshold
-        // multiplier, kick telemetry, and extra smoothed aggregates the
-        // shared module doesn't carry.
-        if (self.audio) |audio| {
-            const wave = audio.getWaveform();
-            const mags = spectral.magnitudes(&wave);
-
-            // True frequency bands, auto-gained against a slow peak so the
-            // conduction gates behave the same at any playback volume.
-            for (0..6) |b| {
-                var p: f32 = 0;
-                for (band_edges[b]..band_edges[b + 1]) |k| p += mags[k];
-                p /= @as(f32, @floatFromInt(band_edges[b + 1] - band_edges[b]));
-                self.band_peak[b] = @max(self.band_peak[b] * @exp(-dt / 4.0), p);
-                const raw = if (self.band_peak[b] > 0.003) p / self.band_peak[b] else 0.0;
-                const attack = @min(1.0, 25.0 * dt);
-                const decay = @min(1.0, 5.0 * dt);
-                self.bands[b] += (raw - self.bands[b]) * (if (raw > self.bands[b]) attack else decay);
-            }
-            self.bass = (self.bands[0] + self.bands[1]) * 0.5;
-            self.treble = (self.bands[4] + self.bands[5]) * 0.5;
-            const energy = (self.bands[0] + self.bands[1] + self.bands[2] +
-                self.bands[3] + self.bands[4] + self.bands[5]) / 6.0;
-            self.energy_ema += (energy - self.energy_ema) * @min(1.0, 2.0 * dt);
-            self.bass_smooth += (self.bass - self.bass_smooth) * @min(1.0, 8.0 * dt);
-            self.treble_smooth += (self.treble - self.treble_smooth) * @min(1.0, 8.0 * dt);
-            for (0..6) |k| {
-                self.bands_smooth[k] += (self.bands[k] - self.bands_smooth[k]) * @min(1.0, 8.0 * dt);
-            }
-
-            // Kick onset: log-compressed positive spectral flux over the
-            // kick bins, thresholded at mean + k*sigma of the trailing
-            // window. Adapts to the passage — no fixed multiplier that's
-            // jumpy on busy mixes and deaf on quiet ones. A kick drives
-            // the tube flash (display side) and nothing in the sim.
-            // Sub bins carry the kick; 180-300Hz gets half weight, and the
-            // snare-body range (300Hz+) is excluded so backbeats don't
-            // double the count.
-            var flux: f32 = 0;
-            for (1..5) |k| {
-                const d = std.math.log1p(mags[k]) - std.math.log1p(self.spec_prev[k]);
-                if (d > 0) flux += d * (if (k < 3) @as(f32, 1.0) else 0.5);
-            }
-            for (0..65) |k| self.spec_prev[k] = mags[k];
-
-            var mean: f32 = 0;
-            for (self.flux_hist) |v| mean += v;
-            mean /= @as(f32, flux_hist_len);
-            var variance: f32 = 0;
-            for (self.flux_hist) |v| variance += (v - mean) * (v - mean);
-            const sigma = @sqrt(variance / @as(f32, flux_hist_len));
-            self.flux_hist[self.flux_pos] = flux;
-            self.flux_pos = (self.flux_pos + 1) % flux_hist_len;
-
-            // Fire on a rising edge that clears BOTH the sigma test and a
-            // relative floor — the floor holds when a loud steady passage
-            // collapses sigma and the mean+k*sigma line hugs the mean.
-            self.beat_cooldown -= dt;
-            const rising = flux > self.flux_last;
-            self.flux_last = flux;
-            if (self.beat_cooldown <= 0 and rising and
-                flux > mean + 2.0 * self.kick_thresh * sigma and
-                flux > mean * 1.5 and
-                flux > 0.015 and self.bands[0] > 0.25)
-            {
-                self.beat_cooldown = 0.18;
-                self.beat = 1.0;
-                self.beat_count += 1;
-            }
-            self.beat *= @exp(-5.0 * dt);
-            if (self.beat < 0.01) self.beat = 0;
+        // ---- audio analysis: spectral bands + kick onset (spectral.zig) ----
+        if (self.music.audio != null) {
+            if (self.music.update(dt)) self.beat_count += 1;
 
             // Detector telemetry, one line per 20s in the daemon log.
             self.log_timer += dt;
@@ -521,11 +424,11 @@ pub const Context = struct {
             // sustain stretches the phosphor memory. Gates are purely
             // spectral — the kick's job belongs to the ratchet.
             for (0..6) |k| {
-                self.gates[k] = std.math.clamp(0.10 + self.bands_smooth[k] * 2.0, 0.10, 1.0);
+                self.gates[k] = std.math.clamp(0.10 + self.music.bands.smooth[k] * 2.0, 0.10, 1.0);
             }
-            const mid = (self.bands_smooth[2] + self.bands_smooth[3]) * 0.5;
+            const mid = (self.music.bands.smooth[2] + self.music.bands.smooth[3]) * 0.5;
             self.soft = std.math.clamp(mid * 1.2 - 0.1, 0.0, 0.65);
-            const trail_eff = std.math.clamp(self.trail_base * (0.6 + self.energy_ema * 2.5), 1.0, 20.0);
+            const trail_eff = std.math.clamp(self.trail_base * (0.6 + self.music.bands.energy_ema * 2.5), 1.0, 20.0);
             self.fresh_decay = @intFromFloat(255.0 / trail_eff);
         }
 
@@ -625,13 +528,13 @@ pub const Context = struct {
         if (self.loc_halation >= 0) c.glUniform1f(self.loc_halation, self.halation);
         if (self.loc_vignette >= 0) c.glUniform1f(self.loc_vignette, self.vignette);
         if (self.loc_scanbar >= 0) c.glUniform1f(self.loc_scanbar, self.scanbar);
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.bass_smooth);
-        if (self.loc_treble >= 0) c.glUniform1f(self.loc_treble, self.treble_smooth);
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.beat);
+        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
+        if (self.loc_treble >= 0) c.glUniform1f(self.loc_treble, self.music.treble());
+        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.beat());
     }
 
     pub fn deinit(self: *Context) void {
-        if (self.audio) |audio| audio_mod.shutdown(audio, self.allocator);
+        self.music.deinit(self.allocator);
         if (self.tex != 0) c.glDeleteTextures(1, &self.tex);
         self.allocator.free(self.cells[0]);
         self.allocator.free(self.cells[1]);

@@ -2,7 +2,6 @@ const std = @import("std");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
-const audio_mod = @import("visualizer/audio.zig");
 const spectral = @import("spectral.zig");
 const smoothstep = @import("bands.zig").smoothstep;
 
@@ -51,9 +50,7 @@ const Magnet = struct {
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    audio: ?*audio_mod.AudioCapture,
-    an: spectral.Bands = .{},
-    onset: spectral.Onset = .{},
+    music: spectral.Analyzer = .{},
 
     width: f32,
     height: f32,
@@ -83,11 +80,10 @@ pub const Context = struct {
     loc_beat: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
-        var audio: ?*audio_mod.AudioCapture = null;
-        if (params.getBool("music", true)) audio = try audio_mod.spawn(allocator, params);
+        const music = try spectral.Analyzer.init(allocator, params);
         return .{
             .allocator = allocator,
-            .audio = audio,
+            .music = music,
             .width = width,
             .height = height,
             .lines = @round(std.math.clamp(params.getFloat("lines", 36.0), 4.0, 64.0)),
@@ -97,13 +93,8 @@ pub const Context = struct {
 
     pub fn update(self: *Context, state: effects.FrameState) void {
         const dt = std.math.clamp(state.dt, 0.0, 0.05);
-        if (self.audio) |audio| {
-            const wave = audio.getWaveform();
-            const mags = spectral.magnitudes(&wave);
-            self.an.update(&mags, dt);
-            self.onset.update(&mags, dt, self.an.bands[0]);
-        }
-        self.flow += dt * (0.35 + self.an.energy_ema * 0.9);
+        _ = self.music.update(dt);
+        self.flow += dt * (0.35 + self.music.bands.energy_ema * 0.9);
 
         for (self.magnets[0..self.magnet_count]) |*m| m.present = false;
         var on_screen = false;
@@ -229,11 +220,11 @@ pub const Context = struct {
         if (self.loc_pole_count >= 0) c.glUniform1i(self.loc_pole_count, @intCast(self.pole_count));
         if (self.loc_lines >= 0) c.glUniform1f(self.loc_lines, self.lines);
         if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);
+        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
+        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.onset.beat);
     }
 
     pub fn deinit(self: *Context) void {
-        if (self.audio) |audio| audio_mod.shutdown(audio, self.allocator);
+        self.music.deinit(self.allocator);
     }
 };

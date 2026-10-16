@@ -1,6 +1,6 @@
 const std = @import("std");
-const iohelp = @import("../../core/io_helper.zig");
-const config_mod = @import("../../core/config.zig");
+const iohelp = @import("../core/io_helper.zig");
+const config_mod = @import("../core/config.zig");
 
 const c = @cImport({
     @cInclude("pulse/simple.h");
@@ -30,6 +30,19 @@ pub fn spawn(allocator: std.mem.Allocator, params: config_mod.EffectParams) !*Au
 pub fn shutdown(cap: *AudioCapture, allocator: std.mem.Allocator) void {
     cap.stop();
     allocator.destroy(cap);
+}
+
+/// Capture for an effect that honours `music` (default true): null when
+/// the user turned it off, so no capture thread runs at all.
+pub fn spawnIfMusic(allocator: std.mem.Allocator, params: config_mod.EffectParams) !?*AudioCapture {
+    if (!params.getBool("music", true)) return null;
+    return try spawn(allocator, params);
+}
+
+/// This frame's waveform, or silence without capture: every effect's
+/// analysis decays to its no-music look on a zero signal.
+pub fn waveformOr0(cap: ?*AudioCapture) [256]f32 {
+    return if (cap) |a| a.getWaveform() else [_]f32{0} ** 256;
 }
 
 pub const AudioCapture = struct {

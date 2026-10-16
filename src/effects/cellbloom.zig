@@ -2,7 +2,6 @@ const std = @import("std");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
-const audio_mod = @import("visualizer/audio.zig");
 const spectral = @import("spectral.zig");
 const smoothstep = @import("bands.zig").smoothstep;
 const clock = @import("clock.zig");
@@ -26,9 +25,7 @@ pub const n_seeds = n_cells * 2;
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    audio: ?*audio_mod.AudioCapture,
-    an: spectral.Bands = .{},
-    onset: spectral.Onset = .{},
+    music: spectral.Analyzer = .{},
     /// Music-paced drift clock (replaces the shader's iTime * 0.15).
     flow: f64 = 0,
     width: f32,
@@ -46,23 +43,17 @@ pub const Context = struct {
     loc_seeds: c.GLint = -1,
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
-        var audio: ?*audio_mod.AudioCapture = null;
-        if (params.getBool("music", true)) audio = try audio_mod.spawn(allocator, params);
-        return .{ .allocator = allocator, .audio = audio, .width = width, .height = height };
+        const music = try spectral.Analyzer.init(allocator, params);
+        return .{ .allocator = allocator, .music = music, .width = width, .height = height };
     }
 
     pub fn update(self: *Context, state: effects.FrameState) void {
         const dt = std.math.clamp(state.dt, 0.0, 0.05);
-        if (self.audio) |audio| {
-            const wave = audio.getWaveform();
-            const mags = spectral.magnitudes(&wave);
-            self.an.update(&mags, dt);
-            self.onset.update(&mags, dt, self.an.bands[0]);
-        }
-        self.flow += dt * (0.15 + self.an.energy_ema * 0.45);
+        _ = self.music.update(dt);
+        self.flow += dt * (0.15 + self.music.bands.energy_ema * 0.45);
 
         const t = self.flow;
-        const bass = (self.an.smooth[0] + self.an.smooth[1]) * 0.5;
+        const bass = self.music.bass();
         const wander = 0.1 * (1.0 + @min(bass, 1.2) * 0.6);
         const reach = 0.055 * @min(self.width, self.height);
         for (0..n_cells) |i| {
@@ -107,14 +98,14 @@ pub const Context = struct {
             self.loc_seeds = c.glGetUniformLocation(prog.program, "iBloomSeeds[0]");
         }
         if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
-        if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.an.smooth[0]);
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);
+        if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.music.bands.smooth[0]);
+        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
+        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.onset.beat);
         if (self.loc_seeds >= 0) c.glUniform4fv(self.loc_seeds, n_seeds, @ptrCast(&self.seeds[0]));
     }
 
     pub fn deinit(self: *Context) void {
-        if (self.audio) |audio| audio_mod.shutdown(audio, self.allocator);
+        self.music.deinit(self.allocator);
     }
 };
 

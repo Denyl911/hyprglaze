@@ -2,7 +2,7 @@ const std = @import("std");
 const shader_mod = @import("../../core/shader.zig");
 const config_mod = @import("../../core/config.zig");
 const effects = @import("../../effects.zig");
-const audio_mod = @import("audio.zig");
+const audio_mod = @import("../audio.zig");
 
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
