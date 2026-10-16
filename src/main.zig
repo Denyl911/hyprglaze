@@ -15,6 +15,7 @@ const watcher_mod = @import("core/watcher.zig");
 const hypr_events = @import("core/hypr_events.zig");
 const effects = @import("effects.zig");
 const cli_mod = @import("cli.zig");
+const strip = @import("strip.zig");
 const particles = @import("effects/particles/system.zig");
 
 pub const std_options: std.Options = .{ .log_level = .info };
@@ -317,7 +318,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     events.copySnapshot(&cached_snapshot);
     // Seed the move-animation tracker, so a window's first move after
     // startup animates rather than reading as a newly seen window.
-    noteWindowGoals(&win_anims, &cached_snapshot, 0);
+    strip.noteWindowGoals(&win_anims, &cached_snapshot, 0);
     slide.seed(cached_snapshot.workspace_id);
 
     const initial_cursor = events.cursorPos();
@@ -330,13 +331,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
         surf_scale,
     );
 
-    const raw0 = deriveRawState(
+    const raw0 = strip.deriveRawState(
         &cached_snapshot,
-        surf_h,
+        strip.View.init(surf_w, surf_h, surf_scale, slide.axis),
         initial_addr,
-        slide.axis,
-        if (slide.axis == .vertical) surf_h else surf_w,
-        surf_scale,
         null,
         0,
     );
@@ -623,7 +621,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     last_snapshot_gen = gen;
                     prev_snapshot = cached_snapshot;
                     events.copySnapshot(&cached_snapshot);
-                    noteWindowGoals(&win_anims, &cached_snapshot, time_f64);
+                    strip.noteWindowGoals(&win_anims, &cached_snapshot, time_f64);
                     // Workspace switch? The strip below rebases around
                     // the new active workspace (every rel shifts by one),
                     // and the camera cancels the resulting jump. The set
@@ -635,7 +633,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     if (ws_change != .none) workspace_switches +%= 1;
                     switch (ws_change) {
                         .slide => {
-                            captureOutgoing(&outgoing, &prev_snapshot, slide.dir);
+                            strip.captureOutgoing(&outgoing, &prev_snapshot, slide.dir);
                             log.debug("slide: ws {d} -> {d}, {d} outgoing windows", .{ prev_snapshot.workspace_id, cached_snapshot.workspace_id, outgoing.count });
                         },
                         // Workspace changed without a slidable direction
@@ -645,13 +643,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         .none => {},
                     }
                 }
-                const raw = deriveRawState(
+                const raw = strip.deriveRawState(
                     &cached_snapshot,
-                    surf_h,
+                    strip.View.init(surf_w, surf_h, surf_scale, slide.axis),
                     cached_win_address,
-                    slide.axis,
-                    if (slide.axis == .vertical) surf_h else surf_w,
-                    surf_scale,
                     if (slide.active) &outgoing else null,
                     if (slide.active) -@as(i8, @intFromFloat(slide.dir)) else 0,
                 );
@@ -693,14 +688,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
             var raw_focus_win = cached_raw_win;
             {
-                const d = animOffsetGl(&win_anims, cached_win_address, present_time, surf_scale);
+                const d = strip.animOffsetGl(&win_anims, cached_win_address, present_time, surf_scale);
                 raw_focus_win.x += d.x;
                 raw_focus_win.y += d.y;
                 raw_focus_win.w += d.w;
                 raw_focus_win.h += d.h;
             }
             if (camera) |cam| {
-                applyOffset(&raw_focus_win.x, &raw_focus_win.y, slide.axis, cam);
+                strip.applyOffset(&raw_focus_win.x, &raw_focus_win.y, slide.axis, cam);
             }
             trans.update(time_f64, raw_focus_win, raw_cursor, cached_win_address);
 
@@ -709,12 +704,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // play at present_time.
             var anim_targets: [hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect = undefined;
             for (0..target_window_count) |i| {
-                anim_targets[i] = target_windows[i];
-                const d = animOffsetGl(&win_anims, target_windows[i].address, present_time, surf_scale);
-                anim_targets[i].x += d.x;
-                anim_targets[i].y += d.y;
-                anim_targets[i].w += d.w;
-                anim_targets[i].h += d.h;
+                anim_targets[i] = strip.animated(&win_anims, target_windows[i], present_time, surf_scale);
             }
 
             // Optional extra smoothing toward those (off by default)
@@ -726,7 +716,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 // analytic — per-frame smoothing is bypassed.
                 for (0..target_window_count) |i| {
                     cached_windows[i] = anim_targets[i];
-                    applyOffset(&cached_windows[i].x, &cached_windows[i].y, slide.axis, cam);
+                    strip.applyOffset(&cached_windows[i].x, &cached_windows[i].y, slide.axis, cam);
                 }
                 cached_window_count = target_window_count;
             } else if (target_window_count != cached_window_count or force_snap) {
@@ -1064,7 +1054,7 @@ fn cacheWindows(
     cached: *[hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect,
     collision: *[hypr.max_visible_windows]particles.Rect,
     count: *u8,
-    raw: *const RawState,
+    raw: *const strip.RawState,
 ) void {
     count.* = raw.window_count;
     for (0..raw.window_count) |i| {
@@ -1115,54 +1105,6 @@ fn configureWindowAnim(
     }
 }
 
-/// Feed every strip window's goal rect (layout space, as reported) to the
-/// move-animation tracker.
-fn noteWindowGoals(tracker: *window_anim.Tracker, snap: *const hypr.VisibleWindows, time: f64) void {
-    var addrs: [hypr.max_visible_windows]u64 = undefined;
-    var goals: [hypr.max_visible_windows]window_anim.Rect = undefined;
-    for (snap.windows[0..snap.count], 0..) |vw, i| {
-        addrs[i] = vw.address;
-        goals[i] = .{ @floatFromInt(vw.x), @floatFromInt(vw.y), @floatFromInt(vw.w), @floatFromInt(vw.h) };
-    }
-    tracker.noteGoals(addrs[0..snap.count], goals[0..snap.count], time);
-}
-
-/// A window's remaining animation (shown - goal) converted from layout
-/// space to a GL-space rect delta. toGl is affine per component, so the
-/// monitor origin cancels; y is flipped about the rect's bottom edge.
-fn animOffsetGl(tracker: *window_anim.Tracker, addr: u64, time: f64, scale: f32) geometry.Rect {
-    const o = tracker.offset(addr, time);
-    return .{
-        .x = o[0] * scale,
-        .y = -(o[1] + o[3]) * scale,
-        .w = o[2] * scale,
-        .h = o[3] * scale,
-    };
-}
-
-/// Apply a slide offset to a rect position in GL space. Offsets are in
-/// layout space (y down); the GL y-axis points up, so vertical offsets
-/// flip sign.
-fn applyOffset(x: *f32, y: *f32, axis: workspace_slide.Axis, amount: f32) void {
-    switch (axis) {
-        .horizontal => x.* += amount,
-        .vertical => y.* -= amount,
-        .none => {},
-    }
-}
-
-const RawState = struct {
-    win: transition.Rect,
-    win_address: u64,
-    windows: [hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect,
-    window_count: u8,
-    window_info: [hypr.max_visible_windows]effects.WindowInfo,
-    focused_class: [64]u8,
-    focused_class_len: u8,
-    focused_title: [64]u8,
-    focused_title_len: u8,
-};
-
 /// The in-compositor Lua watcher, installed into Hyprland's config Lua
 /// state. Pushes `custom>>hg:*` events on socket2 (see hypr_events.zig).
 const watcher_lua = @embedFile("core/watcher.lua");
@@ -1182,130 +1124,6 @@ fn installWatcher(ipc: *const hypr.HyprIpc, events: *hypr_events.HyprEvents) !vo
     try ipc.eval(watcher_lua);
     events.noteHeartbeat();
     log.info("lua watcher installed", .{});
-}
-
-/// Copy the active-workspace windows of `from` into `out`, parked at
-/// `rel = -dir`: the set the camera will slide out. Same monitor, same
-/// origin, so the coordinates carry over untouched.
-fn captureOutgoing(out: *hypr.VisibleWindows, from: *const hypr.VisibleWindows, dir: f32) void {
-    out.* = .{ .workspace_id = from.workspace_id, .origin_x = from.origin_x, .origin_y = from.origin_y };
-    const rel: i8 = if (dir > 0) -1 else 1;
-    for (from.windows[0..from.count]) |vw| {
-        if (vw.rel != 0) continue;
-        out.windows[out.count] = vw;
-        out.windows[out.count].rel = rel;
-        out.count += 1;
-    }
-}
-
-/// Accumulates strip windows in GL surface space with their rel offsets
-/// applied, in the order the caller emits them, capped at the uniform
-/// array size.
-const StripBuilder = struct {
-    windows: [hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect = undefined,
-    win_info: [hypr.max_visible_windows]effects.WindowInfo = undefined,
-    focused_idx: ?usize = null,
-    count: u8 = 0,
-    surf_h: f32,
-    focused_address: u64,
-    axis: workspace_slide.Axis,
-    span: f32,
-    scale: f32,
-
-    fn add(self: *StripBuilder, vw: *const hypr.WindowGeometry, origin_x: i32, origin_y: i32) void {
-        if (self.count >= hypr.max_visible_windows) return;
-        const out = self.count;
-        const r = geometry.toGl(vw.x, vw.y, vw.w, vw.h, origin_x, origin_y, self.surf_h, self.scale);
-        self.windows[out] = .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h, .address = vw.address };
-        applyOffset(&self.windows[out].x, &self.windows[out].y, self.axis, @as(f32, @floatFromInt(vw.rel)) * self.span);
-        var info = effects.WindowInfo{};
-        const clen: u8 = @intCast(@min(vw.class_len, 64));
-        if (clen > 0) @memcpy(info.class[0..clen], vw.class[0..clen]);
-        info.class_len = clen;
-        const tlen: u8 = @intCast(@min(vw.title_len, 64));
-        if (tlen > 0) @memcpy(info.title[0..tlen], vw.title[0..tlen]);
-        info.title_len = tlen;
-        self.win_info[out] = info;
-        self.count += 1;
-        if (self.focused_address != 0 and vw.address == self.focused_address) self.focused_idx = out;
-    }
-};
-
-/// Build the window strip from a snapshot, looking up the focused window
-/// by `focused_address` (from the event stream, or a one-time bootstrap
-/// query at startup). Strip windows (rel ±1) are parked one `span`
-/// off-screen along the slide axis; with sliding disabled they are dropped.
-/// With `outgoing` set (a slide is running), the snapshot's `skip_rel`
-/// bucket is replaced by it: the workspace being left slides out, not
-/// whichever workspace happens to have the nearest id. Emission order is
-/// active, outgoing, far side, so the cap drops what is off-screen anyway.
-///
-/// `win_address` in the result is 0 when the focused window is not present
-/// in the visible list (e.g. focus is on another monitor's workspace).
-fn deriveRawState(
-    visible: *const hypr.VisibleWindows,
-    surf_h: f32,
-    focused_address: u64,
-    axis: workspace_slide.Axis,
-    span: f32,
-    scale: f32,
-    outgoing: ?*const hypr.VisibleWindows,
-    skip_rel: i8,
-) RawState {
-    var b = StripBuilder{
-        .surf_h = surf_h,
-        .focused_address = focused_address,
-        .axis = axis,
-        .span = span,
-        .scale = scale,
-    };
-
-    for (visible.windows[0..visible.count]) |*vw| {
-        if (vw.rel == 0) b.add(vw, visible.origin_x, visible.origin_y);
-    }
-    if (axis != .none) {
-        if (outgoing) |og| {
-            for (og.windows[0..og.count]) |*vw| b.add(vw, og.origin_x, og.origin_y);
-        }
-        for (visible.windows[0..visible.count]) |*vw| {
-            if (vw.rel == 0) continue;
-            if (outgoing != null and vw.rel == skip_rel) continue;
-            b.add(vw, visible.origin_x, visible.origin_y);
-        }
-    }
-
-    const windows = b.windows;
-    const win_info = b.win_info;
-    const focused_idx = b.focused_idx;
-    const count = b.count;
-
-    var fc: [64]u8 = [_]u8{0} ** 64;
-    var fc_len: u8 = 0;
-    var ft: [64]u8 = [_]u8{0} ** 64;
-    var ft_len: u8 = 0;
-    var win_rect = transition.Rect{};
-    var win_addr: u64 = 0;
-    if (focused_idx) |fi| {
-        const wf = windows[fi];
-        win_rect = .{ .x = wf.x, .y = wf.y, .w = wf.w, .h = wf.h };
-        win_addr = wf.address;
-        fc = win_info[fi].class;
-        fc_len = win_info[fi].class_len;
-        ft = win_info[fi].title;
-        ft_len = win_info[fi].title_len;
-    }
-
-    return .{
-        .win = win_rect,
-        .win_address = win_addr,
-        .windows = windows,
-        .window_count = count,
-        .window_info = win_info,
-        .focused_class = fc,
-        .focused_class_len = fc_len,
-        .focused_title = ft,
-        .focused_title_len = ft_len,
-    };
 }
 
 fn loadConfig(allocator: std.mem.Allocator, cli: *const cli_mod.CliArgs) !config_mod.Config {

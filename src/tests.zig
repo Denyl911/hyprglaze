@@ -1,5 +1,6 @@
 test {
     _ = @import("cli.zig");
+    _ = @import("strip.zig");
     _ = @import("core/config.zig");
     _ = @import("core/io_helper.zig");
     _ = @import("core/palette.zig");

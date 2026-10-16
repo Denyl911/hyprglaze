@@ -6,10 +6,10 @@
 //! layer surface is monitor-local and, being GL, has y growing upward from the
 //! bottom.
 //!
-//! Both conversions live here rather than inline at the three call sites in
-//! main.zig, because sign errors in this arithmetic are invisible until
-//! someone runs a stacked monitor layout, and main.zig is not unit-testable
-//! (it needs a live compositor and a GL context).
+//! Both conversions live here rather than inline at their call sites (the
+//! window strip in strip.zig, the cursor in main.zig), because sign errors in
+//! this arithmetic are invisible until someone runs a stacked monitor layout.
+//! The tests below pin them down.
 //!
 //! `scale` maps logical pixels onto buffer pixels. Hyprland's coordinates and
 //! the layer surface's configured size are both logical, so scale is 1.0
