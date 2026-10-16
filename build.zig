@@ -50,6 +50,19 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // Runtime data, laid out as the daemon looks for it: shaders and sprites
+    // under share/hyprglaze (its fallback after the CWD), and the systemd
+    // user units. `zig build --prefix /usr` is then the whole install.
+    b.installDirectory(.{
+        .source_dir = b.path("shaders"),
+        .install_dir = .prefix,
+        .install_subdir = "share/hyprglaze/shaders",
+        .include_extensions = &.{".frag"},
+    });
+    b.installFile("sprites/buddy.png", "share/hyprglaze/sprites/buddy.png");
+    b.installFile("contrib/hyprglaze.service", "lib/systemd/user/hyprglaze.service");
+    b.installFile("contrib/hyprglaze@.service", "lib/systemd/user/hyprglaze@.service");
+
     // --- run step ---
     const run_step = b.step("run", "Run hyprglaze");
     const run_cmd = b.addRunArtifact(exe);
@@ -69,12 +82,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     ipc_test.root_module.link_libc = true;
-    b.installArtifact(ipc_test);
+    // A debugging aid: run by its step, never installed (or packaged).
 
     const ipc_run_step = b.step("ipc-test", "Run Hyprland IPC test utility");
     const ipc_run_cmd = b.addRunArtifact(ipc_test);
     ipc_run_step.dependOn(&ipc_run_cmd.step);
-    ipc_run_cmd.step.dependOn(b.getInstallStep());
 
     // --- unit tests ---
     const tests = b.addTest(.{

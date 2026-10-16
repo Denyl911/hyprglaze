@@ -70,6 +70,13 @@ zig build
 zig build run
 ```
 
+To install system-wide (binary, shaders, sprite sheet and the systemd user
+units, the same layout as the package):
+
+```
+sudo zig build -Doptimize=ReleaseSafe --prefix /usr
+```
+
 ## Configuration
 
 `~/.config/hypr/hyprglaze.toml`:
