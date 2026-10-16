@@ -5,6 +5,8 @@ const effects = @import("../effects.zig");
 const spectral = @import("spectral.zig");
 const smoothstep = @import("bands.zig").smoothstep;
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -71,13 +73,14 @@ pub const Context = struct {
     poles: [max_poles][4]f32 = undefined,
     pole_count: u32 = 0,
 
-    cached_program: c.GLuint = 0,
-    loc_poles: c.GLint = -1,
-    loc_pole_count: c.GLint = -1,
-    loc_lines: c.GLint = -1,
-    loc_flow: c.GLint = -1,
-    loc_bass: c.GLint = -1,
-    loc_beat: c.GLint = -1,
+    u: Uniforms(.{
+        .poles = "iFluxPoles[0]",
+        .pole_count = "iFluxPoleCount",
+        .lines = "iFluxLines",
+        .flow = "iFluxFlow",
+        .bass = "iFluxBass",
+        .beat = "iFluxBeat",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
         const music = try spectral.Analyzer.init(allocator, params);
@@ -205,23 +208,13 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_poles = c.glGetUniformLocation(prog.program, "iFluxPoles[0]");
-            self.loc_pole_count = c.glGetUniformLocation(prog.program, "iFluxPoleCount");
-            self.loc_lines = c.glGetUniformLocation(prog.program, "iFluxLines");
-            self.loc_flow = c.glGetUniformLocation(prog.program, "iFluxFlow");
-            self.loc_bass = c.glGetUniformLocation(prog.program, "iFluxBass");
-            self.loc_beat = c.glGetUniformLocation(prog.program, "iFluxBeat");
-        }
-        if (self.loc_poles >= 0 and self.pole_count > 0)
-            c.glUniform4fv(self.loc_poles, @intCast(self.pole_count), @ptrCast(&self.poles[0]));
-        if (self.loc_pole_count >= 0) c.glUniform1i(self.loc_pole_count, @intCast(self.pole_count));
-        if (self.loc_lines >= 0) c.glUniform1f(self.loc_lines, self.lines);
-        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.onset.beat);
+        self.u.use(prog.program);
+        self.u.f4v(.poles, @intCast(self.pole_count), &self.poles[0]);
+        self.u.int(.pole_count, @intCast(self.pole_count));
+        self.u.f1(.lines, self.lines);
+        self.u.f1(.flow, @floatCast(self.flow));
+        self.u.f1(.bass, self.music.bass());
+        self.u.f1(.beat, self.music.onset.beat);
     }
 
     pub fn deinit(self: *Context) void {

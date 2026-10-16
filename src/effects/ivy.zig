@@ -6,6 +6,8 @@ const effects = @import("../effects.zig");
 const spectral = @import("spectral.zig");
 const bands_mod = @import("bands.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -311,17 +313,18 @@ pub const Context = struct {
     tex_tiles: c.GLuint = 0,
     tex_refs: c.GLuint = 0,
 
-    cached_program: c.GLuint = 0,
-    loc_prims: c.GLint = -1,
-    loc_tiles: c.GLint = -1,
-    loc_refs: c.GLint = -1,
-    loc_tile_px: c.GLint = -1,
-    loc_fall: c.GLint = -1,
-    loc_time: c.GLint = -1,
-    loc_bass: c.GLint = -1,
-    loc_treble: c.GLint = -1,
-    loc_beat: c.GLint = -1,
-    loc_bright: c.GLint = -1,
+    u: Uniforms(.{
+        .prims = "iPrims",
+        .tiles = "iTiles",
+        .refs = "iRefs",
+        .tile_px = "iTilePx",
+        .fall = "iFall[0]",
+        .time = "iIvyTime",
+        .bass = "iBass",
+        .treble = "iTreble",
+        .beat = "iBeat",
+        .bright = "iBright",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
         var music = try spectral.Analyzer.init(allocator, params);
@@ -1389,26 +1392,14 @@ pub const Context = struct {
         if (rrow > 0) c.glTexSubImage2D(c.GL_TEXTURE_2D, 0, 0, 0, ref_tex_w, @intCast(rrow), c.GL_RED_INTEGER, c.GL_UNSIGNED_INT, @ptrCast(self.refs.ptr));
         c.glActiveTexture(c.GL_TEXTURE0);
 
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_prims = c.glGetUniformLocation(prog.program, "iPrims");
-            self.loc_tiles = c.glGetUniformLocation(prog.program, "iTiles");
-            self.loc_refs = c.glGetUniformLocation(prog.program, "iRefs");
-            self.loc_tile_px = c.glGetUniformLocation(prog.program, "iTilePx");
-            self.loc_fall = c.glGetUniformLocation(prog.program, "iFall[0]");
-            self.loc_time = c.glGetUniformLocation(prog.program, "iIvyTime");
-            self.loc_bass = c.glGetUniformLocation(prog.program, "iBass");
-            self.loc_treble = c.glGetUniformLocation(prog.program, "iTreble");
-            self.loc_beat = c.glGetUniformLocation(prog.program, "iBeat");
-            self.loc_bright = c.glGetUniformLocation(prog.program, "iBright");
-        }
+        self.u.use(prog.program);
 
-        if (self.loc_prims >= 0) c.glUniform1i(self.loc_prims, 0);
-        if (self.loc_tiles >= 0) c.glUniform1i(self.loc_tiles, 1);
-        if (self.loc_refs >= 0) c.glUniform1i(self.loc_refs, 2);
-        if (self.loc_tile_px >= 0) c.glUniform1i(self.loc_tile_px, tile_px);
+        self.u.int(.prims, 0);
+        self.u.int(.tiles, 1);
+        self.u.int(.refs, 2);
+        self.u.int(.tile_px, tile_px);
 
-        if (self.loc_fall >= 0) {
+        if (self.u.loc(.fall) >= 0) {
             // (x, y, angle, size) — a fast attack so a released leaf
             // appears the instant its stem copy vanishes (no blink), then a
             // fade over the last third of its fall.
@@ -1418,16 +1409,16 @@ pub const Context = struct {
                 const env = @min(p.age * 10.0, 1.0) * (1.0 - smoothstep(p.life * 0.65, p.life, p.age));
                 pv[i] = .{ p.pos[0], p.pos[1], @mod(p.angle, std.math.tau), p.size * env };
             }
-            c.glUniform4fv(self.loc_fall, max_fall, @ptrCast(&pv[0]));
+            self.u.f4v(.fall, max_fall, &pv[0]);
         }
 
         // Effect-local time (fire.zig pattern) — keeps shader noise
         // coordinates small so f32 precision holds over long sessions.
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
-        if (self.loc_treble >= 0) c.glUniform1f(self.loc_treble, self.music.treble());
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.onset.beat);
-        if (self.loc_bright >= 0) c.glUniform1f(self.loc_bright, self.brightness);
+        self.u.f1(.time, @floatCast(self.now));
+        self.u.f1(.bass, self.music.bass());
+        self.u.f1(.treble, self.music.treble());
+        self.u.f1(.beat, self.music.onset.beat);
+        self.u.f1(.bright, self.brightness);
     }
 
     pub fn deinit(self: *Context) void {

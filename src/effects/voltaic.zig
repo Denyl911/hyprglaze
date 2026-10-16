@@ -6,6 +6,8 @@ const effects = @import("../effects.zig");
 const audio_mod = @import("audio.zig");
 const bands_mod = @import("bands.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -203,16 +205,17 @@ pub const Context = struct {
 
     /// Cached uniform locations — resolved on first upload, re-resolved on
     /// shader hot-reload (program ID changes).
-    cached_program: c.GLuint = 0,
-    loc_segs: c.GLint = -1,
-    loc_segb: c.GLint = -1,
-    loc_segcount: c.GLint = -1,
-    loc_time: c.GLint = -1,
-    loc_beat: c.GLint = -1,
-    loc_bass: c.GLint = -1,
-    loc_treble: c.GLint = -1,
-    loc_flash: c.GLint = -1,
-    loc_ghost_start: c.GLint = -1,
+    u: Uniforms(.{
+        .segs = "iSegs[0]",
+        .segb = "iSegB[0]",
+        .segcount = "iSegCount",
+        .time = "iVoltTime",
+        .beat = "iBeat",
+        .bass = "iBass",
+        .treble = "iTreble",
+        .flash = "iFlash",
+        .ghost_start = "iGhostStart",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
         const audio = try audio_mod.spawnIfMusic(allocator, params);
@@ -731,41 +734,27 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
 
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_segs = c.glGetUniformLocation(prog.program, "iSegs[0]");
-            self.loc_segb = c.glGetUniformLocation(prog.program, "iSegB[0]");
-            self.loc_segcount = c.glGetUniformLocation(prog.program, "iSegCount");
-            self.loc_time = c.glGetUniformLocation(prog.program, "iVoltTime");
-            self.loc_beat = c.glGetUniformLocation(prog.program, "iBeat");
-            self.loc_bass = c.glGetUniformLocation(prog.program, "iBass");
-            self.loc_treble = c.glGetUniformLocation(prog.program, "iTreble");
-            self.loc_flash = c.glGetUniformLocation(prog.program, "iFlash");
-            self.loc_ghost_start = c.glGetUniformLocation(prog.program, "iGhostStart");
-        }
+        self.u.use(prog.program);
 
         const n = self.seg_count;
-        if (self.loc_segs >= 0 and n > 0) {
-            c.glUniform4fv(self.loc_segs, @intCast(n), @ptrCast(&self.segs[0]));
-        }
-        if (self.loc_segb >= 0) {
+        self.u.f4v(.segs, @intCast(n), &self.segs[0]);
+        if (self.u.loc(.segb) >= 0) {
             // Brightness packed 4-per-vec4; shader unpacks with [i>>2][i&3].
             var packed_b: [seg_b_vec4s][4]f32 = [_][4]f32{.{ 0, 0, 0, 0 }} ** seg_b_vec4s;
             for (0..n) |i| packed_b[i / 4][i % 4] = self.seg_b[i];
-            c.glUniform4fv(self.loc_segb, @intCast((n + 3) / 4), @ptrCast(&packed_b[0]));
+            self.u.f4v(.segb, @intCast((n + 3) / 4), &packed_b[0]);
         }
-        if (self.loc_segcount >= 0) c.glUniform1i(self.loc_segcount, @intCast(n));
+        self.u.int(.segcount, @intCast(n));
 
         // Effect-local time (fire.zig pattern) — keeps corona noise
         // coordinates small so f32 precision holds over long sessions.
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.an.beat);
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.an.bass);
-        if (self.loc_treble >= 0) c.glUniform1f(self.loc_treble, self.an.treble);
-        if (self.loc_flash >= 0) c.glUniform1f(self.loc_flash, self.flash);
-        if (self.loc_ghost_start >= 0) c.glUniform1i(self.loc_ghost_start, @intCast(self.ghost_start_idx));
+        self.u.f1(.time, @floatCast(self.now));
+        self.u.f1(.beat, self.an.beat);
+        self.u.f1(.bass, self.an.bass);
+        self.u.f1(.treble, self.an.treble);
+        self.u.f1(.flash, self.flash);
+        self.u.int(.ghost_start, @intCast(self.ghost_start_idx));
     }
 
     pub fn deinit(self: *Context) void {

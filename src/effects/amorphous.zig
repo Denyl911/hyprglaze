@@ -6,6 +6,8 @@ const iohelp = @import("../core/io_helper.zig");
 const palette_mod = @import("../core/palette.zig");
 const spectral = @import("spectral.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -89,11 +91,12 @@ pub const Context = struct {
 
     balls: [total_balls]Ball = undefined,
 
-    cached_program: c.GLuint = 0,
-    loc_front: c.GLint = -1,
-    loc_back: c.GLint = -1,
-    loc_opacity: c.GLint = -1,
-    loc_balls: c.GLint = -1,
+    u: Uniforms(.{
+        .front = "iBlobFront",
+        .back = "iBlobBack",
+        .opacity = "iBlobOpacity",
+        .balls = "iBalls[0]",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
         const prng = std.Random.DefaultPrng.init(iohelp.nowNs());
@@ -457,18 +460,11 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_front = c.glGetUniformLocation(prog.program, "iBlobFront");
-            self.loc_back = c.glGetUniformLocation(prog.program, "iBlobBack");
-            self.loc_opacity = c.glGetUniformLocation(prog.program, "iBlobOpacity");
-            self.loc_balls = c.glGetUniformLocation(prog.program, "iBalls[0]");
-        }
-        if (self.loc_front >= 0) c.glUniform3f(self.loc_front, self.front[0], self.front[1], self.front[2]);
-        if (self.loc_back >= 0) c.glUniform3f(self.loc_back, self.back[0], self.back[1], self.back[2]);
-        if (self.loc_opacity >= 0) c.glUniform1f(self.loc_opacity, self.opacity);
-        if (self.loc_balls >= 0) c.glUniform4fv(self.loc_balls, total_balls, @ptrCast(&self.balls[0]));
+        self.u.use(prog.program);
+        self.u.f3(.front, self.front[0], self.front[1], self.front[2]);
+        self.u.f3(.back, self.back[0], self.back[1], self.back[2]);
+        self.u.f1(.opacity, self.opacity);
+        self.u.f4v(.balls, total_balls, &self.balls[0]);
     }
 
     pub fn deinit(self: *Context) void {

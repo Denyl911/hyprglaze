@@ -3,6 +3,8 @@ const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
     @cInclude("time.h");
@@ -20,6 +22,7 @@ pub const Context = struct {
     start_hour: f32 = 6.0,
     end_hour: f32 = 24.0,
     fill: f32 = 0,
+    u: Uniforms(.{ .fill = "iFill" }) = .{},
 
     pub fn init(params: config_mod.EffectParams) Context {
         var self = Context{
@@ -36,9 +39,8 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
-        const loc = c.glGetUniformLocation(prog.program, "iFill");
-        if (loc >= 0) c.glUniform1f(loc, self.fill);
+        self.u.use(prog.program);
+        self.u.f1(.fill, self.fill);
     }
 
     pub fn deinit(_: *Context) void {}

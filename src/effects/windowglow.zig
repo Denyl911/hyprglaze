@@ -4,6 +4,8 @@ const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
 const spectral = @import("spectral.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -21,11 +23,12 @@ pub const Context = struct {
     /// Accumulated here so the rate change never stutters the sequence.
     grain_clock: f64 = 0,
 
-    cached_program: c.GLuint = 0,
-    loc_energy: c.GLint = -1,
-    loc_bass: c.GLint = -1,
-    loc_grain: c.GLint = -1,
-    loc_grain_t: c.GLint = -1,
+    u: Uniforms(.{
+        .energy = "iGlowEnergy",
+        .bass = "iGlowBass",
+        .grain = "iGlowGrain",
+        .grain_t = "iGlowGrainT",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) !Context {
         const music = try spectral.Analyzer.init(allocator, params);
@@ -44,18 +47,11 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_energy = c.glGetUniformLocation(prog.program, "iGlowEnergy");
-            self.loc_bass = c.glGetUniformLocation(prog.program, "iGlowBass");
-            self.loc_grain = c.glGetUniformLocation(prog.program, "iGlowGrain");
-            self.loc_grain_t = c.glGetUniformLocation(prog.program, "iGlowGrainT");
-        }
-        if (self.loc_energy >= 0) c.glUniform1f(self.loc_energy, self.music.bands.energy_ema);
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
-        if (self.loc_grain >= 0) c.glUniform1f(self.loc_grain, self.grain);
-        if (self.loc_grain_t >= 0) c.glUniform1f(self.loc_grain_t, @floatCast(self.grain_clock));
+        self.u.use(prog.program);
+        self.u.f1(.energy, self.music.bands.energy_ema);
+        self.u.f1(.bass, self.music.bass());
+        self.u.f1(.grain, self.grain);
+        self.u.f1(.grain_t, @floatCast(self.grain_clock));
     }
 
     pub fn deinit(self: *Context) void {

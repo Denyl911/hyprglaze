@@ -6,6 +6,8 @@ const audio_mod = @import("../audio.zig");
 
 const log = std.log.scoped(.milkdrop);
 
+const Uniforms = @import("../uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -186,6 +188,31 @@ pub const Context = struct {
     vao: c.GLuint = 0,
     /// GL objects above exist (see ensureGl).
     gl_ready: bool = false,
+    wu: Uniforms(.{
+        .prev = "uPrev",
+        .bass = "uBass",
+        .mid = "uMid",
+        .high = "uHigh",
+        .beat = "uBeat",
+        .time = "uTime",
+        .res = "uRes",
+        .kaleido = "uKaleidoSegments",
+        .bg = "uBg",
+    }) = .{},
+    ru: Uniforms(.{
+        .wave = "uWave",
+        .bass = "uBass",
+        .mid = "uMid",
+        .high = "uHigh",
+        .beat = "uBeat",
+        .time = "uTime",
+        .res = "uRes",
+        .palette = "uPalette",
+        .palette_size = "uPaletteSize",
+        .bg = "uBg",
+        .fg = "uFg",
+    }) = .{},
+    mu: Uniforms(.{ .sprite = "iSprite" }) = .{},
     /// Effect clock (f64: see clock.zig), the shaders' uTime.
     now: f64 = 0,
 
@@ -301,19 +328,20 @@ pub const Context = struct {
         c.glFramebufferTexture2D(c.GL_FRAMEBUFFER, c.GL_COLOR_ATTACHMENT0, c.GL_TEXTURE_2D, self.tex[curr], 0);
         c.glViewport(0, 0, self.width, self.height);
 
-        c.glUseProgram(self.warp_prog);
+        const res_w: f32 = @floatFromInt(self.width);
+        const res_h: f32 = @floatFromInt(self.height);
+        self.wu.use(self.warp_prog);
         c.glActiveTexture(c.GL_TEXTURE0);
         c.glBindTexture(c.GL_TEXTURE_2D, self.tex[prev]);
-        setU1i(self.warp_prog, "uPrev", 0);
-        setU1f(self.warp_prog, "uBass", self.bass * 4.0);
-        setU1f(self.warp_prog, "uMid", self.mid * 4.0);
-        setU1f(self.warp_prog, "uHigh", self.high * 4.0);
-        setU1f(self.warp_prog, "uBeat", self.beat);
-        setU1f(self.warp_prog, "uTime", time);
-        setU2f(self.warp_prog, "uRes", @floatFromInt(self.width), @floatFromInt(self.height));
-        setU1i(self.warp_prog, "uKaleidoSegments", self.kaleido_segments);
-        const warp_bg_loc = c.glGetUniformLocation(self.warp_prog, "uBg");
-        if (warp_bg_loc >= 0) c.glUniform3fv(warp_bg_loc, 1, &self.palette_bg);
+        self.wu.int(.prev, 0);
+        self.wu.f1(.bass, self.bass * 4.0);
+        self.wu.f1(.mid, self.mid * 4.0);
+        self.wu.f1(.high, self.high * 4.0);
+        self.wu.f1(.beat, self.beat);
+        self.wu.f1(.time, time);
+        self.wu.f2(.res, res_w, res_h);
+        self.wu.int(.kaleido, self.kaleido_segments);
+        self.wu.f3v(.bg, 1, &self.palette_bg);
 
         c.glBindVertexArray(self.vao);
         c.glDrawArrays(c.GL_TRIANGLE_STRIP, 0, 4);
@@ -322,24 +350,18 @@ pub const Context = struct {
         c.glEnable(c.GL_BLEND);
         c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE);
 
-        c.glUseProgram(self.reactive_prog);
-        const wave_loc = c.glGetUniformLocation(self.reactive_prog, "uWave");
-        if (wave_loc >= 0) c.glUniform4fv(wave_loc, 64, @ptrCast(&wave));
-        setU1f(self.reactive_prog, "uBass", self.bass * 4.0);
-        setU1f(self.reactive_prog, "uMid", self.mid * 4.0);
-        setU1f(self.reactive_prog, "uHigh", self.high * 4.0);
-        setU1f(self.reactive_prog, "uBeat", self.beat);
-        setU1f(self.reactive_prog, "uTime", time);
-        setU2f(self.reactive_prog, "uRes", @floatFromInt(self.width), @floatFromInt(self.height));
-
-        // Upload palette
-        const pal_loc = c.glGetUniformLocation(self.reactive_prog, "uPalette");
-        if (pal_loc >= 0) c.glUniform3fv(pal_loc, 16, &self.palette);
-        setU1i(self.reactive_prog, "uPaletteSize", self.palette_size);
-        const bg_loc = c.glGetUniformLocation(self.reactive_prog, "uBg");
-        if (bg_loc >= 0) c.glUniform3fv(bg_loc, 1, &self.palette_bg);
-        const fg_loc = c.glGetUniformLocation(self.reactive_prog, "uFg");
-        if (fg_loc >= 0) c.glUniform3fv(fg_loc, 1, &self.palette_fg);
+        self.ru.use(self.reactive_prog);
+        self.ru.f4v(.wave, 64, &wave);
+        self.ru.f1(.bass, self.bass * 4.0);
+        self.ru.f1(.mid, self.mid * 4.0);
+        self.ru.f1(.high, self.high * 4.0);
+        self.ru.f1(.beat, self.beat);
+        self.ru.f1(.time, time);
+        self.ru.f2(.res, res_w, res_h);
+        self.ru.f3v(.palette, 16, &self.palette);
+        self.ru.int(.palette_size, self.palette_size);
+        self.ru.f3v(.bg, 1, &self.palette_bg);
+        self.ru.f3v(.fg, 1, &self.palette_fg);
 
         c.glDrawArrays(c.GL_TRIANGLE_STRIP, 0, 4);
         c.glDisable(c.GL_BLEND);
@@ -350,11 +372,10 @@ pub const Context = struct {
         self.current = 1 - self.current;
 
         // --- Blit result via main shader ---
-        c.glUseProgram(prog.program);
+        self.mu.use(prog.program);
         c.glActiveTexture(c.GL_TEXTURE0);
         c.glBindTexture(c.GL_TEXTURE_2D, self.tex[curr]);
-        const sprite_loc = c.glGetUniformLocation(prog.program, "iSprite");
-        if (sprite_loc >= 0) c.glUniform1i(sprite_loc, 0);
+        self.mu.int(.sprite, 0);
     }
 
     pub fn deinit(self: *Context) void {
@@ -368,18 +389,6 @@ pub const Context = struct {
     }
 };
 
-fn setU1i(prog: c.GLuint, name: [*:0]const u8, val: c.GLint) void {
-    const loc = c.glGetUniformLocation(prog, name);
-    if (loc >= 0) c.glUniform1i(loc, val);
-}
-fn setU1f(prog: c.GLuint, name: [*:0]const u8, val: f32) void {
-    const loc = c.glGetUniformLocation(prog, name);
-    if (loc >= 0) c.glUniform1f(loc, val);
-}
-fn setU2f(prog: c.GLuint, name: [*:0]const u8, x: f32, y: f32) void {
-    const loc = c.glGetUniformLocation(prog, name);
-    if (loc >= 0) c.glUniform2f(loc, x, y);
-}
 
 fn compileShader(src: [*:0]const u8, shader_type: c.GLenum) c.GLuint {
     const shader = c.glCreateShader(shader_type);

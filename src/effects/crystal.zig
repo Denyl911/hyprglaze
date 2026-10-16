@@ -4,6 +4,8 @@ const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
 const spectral = @import("spectral.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -32,13 +34,14 @@ pub const Context = struct {
     dispersion: f32,
     brightness: f32,
 
-    cached_program: c.GLuint = 0,
-    loc_turn: c.GLint = -1,
-    loc_bands: c.GLint = -1,
-    loc_bass: c.GLint = -1,
-    loc_beat: c.GLint = -1,
-    loc_disp: c.GLint = -1,
-    loc_bright: c.GLint = -1,
+    u: Uniforms(.{
+        .turn = "iCrysTurn",
+        .bands = "iCrysBands[0]",
+        .bass = "iCrysBass",
+        .beat = "iCrysBeat",
+        .disp = "iCrysDisp",
+        .bright = "iCrysBright",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) !Context {
         const music = try spectral.Analyzer.init(allocator, params);
@@ -59,22 +62,13 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_turn = c.glGetUniformLocation(prog.program, "iCrysTurn");
-            self.loc_bands = c.glGetUniformLocation(prog.program, "iCrysBands[0]");
-            self.loc_bass = c.glGetUniformLocation(prog.program, "iCrysBass");
-            self.loc_beat = c.glGetUniformLocation(prog.program, "iCrysBeat");
-            self.loc_disp = c.glGetUniformLocation(prog.program, "iCrysDisp");
-            self.loc_bright = c.glGetUniformLocation(prog.program, "iCrysBright");
-        }
-        if (self.loc_turn >= 0) c.glUniform1f(self.loc_turn, @floatCast(self.turn));
-        if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.music.bands.smooth[0]);
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.onset.beat);
-        if (self.loc_disp >= 0) c.glUniform1f(self.loc_disp, self.dispersion);
-        if (self.loc_bright >= 0) c.glUniform1f(self.loc_bright, self.brightness);
+        self.u.use(prog.program);
+        self.u.f1(.turn, @floatCast(self.turn));
+        self.u.f1v(.bands, 6, &self.music.bands.smooth[0]);
+        self.u.f1(.bass, self.music.bass());
+        self.u.f1(.beat, self.music.onset.beat);
+        self.u.f1(.disp, self.dispersion);
+        self.u.f1(.bright, self.brightness);
     }
 
     pub fn deinit(self: *Context) void {

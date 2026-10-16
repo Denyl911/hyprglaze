@@ -4,6 +4,8 @@ const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
 const audio_mod = @import("audio.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -43,13 +45,14 @@ pub const Context = struct {
     reach: f32,
     grain: f32,
 
-    cached_program: c.GLuint = 0,
-    loc_drift: c.GLint = -1,
-    loc_grain_t: c.GLint = -1,
-    loc_wave: c.GLint = -1,
-    loc_scale: c.GLint = -1,
-    loc_reach: c.GLint = -1,
-    loc_grain: c.GLint = -1,
+    u: Uniforms(.{
+        .drift = "iWeftDrift",
+        .grain_t = "iWeftGrainT",
+        .wave = "iWeftWave[0]",
+        .scale = "iWeftScale",
+        .reach = "iWeftReach",
+        .grain = "iWeftGrain",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) !Context {
         const audio = try audio_mod.spawnIfMusic(allocator, params);
@@ -84,22 +87,13 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_drift = c.glGetUniformLocation(prog.program, "iWeftDrift");
-            self.loc_grain_t = c.glGetUniformLocation(prog.program, "iWeftGrainT");
-            self.loc_wave = c.glGetUniformLocation(prog.program, "iWeftWave[0]");
-            self.loc_scale = c.glGetUniformLocation(prog.program, "iWeftScale");
-            self.loc_reach = c.glGetUniformLocation(prog.program, "iWeftReach");
-            self.loc_grain = c.glGetUniformLocation(prog.program, "iWeftGrain");
-        }
-        if (self.loc_drift >= 0) c.glUniform1f(self.loc_drift, @floatCast(self.drift));
-        if (self.loc_grain_t >= 0) c.glUniform1f(self.loc_grain_t, @floatCast(self.grain_clock));
-        if (self.loc_wave >= 0) c.glUniform1fv(self.loc_wave, 128, &self.wave_n[0]);
-        if (self.loc_scale >= 0) c.glUniform1f(self.loc_scale, self.scale);
-        if (self.loc_reach >= 0) c.glUniform1f(self.loc_reach, self.reach);
-        if (self.loc_grain >= 0) c.glUniform1f(self.loc_grain, self.grain);
+        self.u.use(prog.program);
+        self.u.f1(.drift, @floatCast(self.drift));
+        self.u.f1(.grain_t, @floatCast(self.grain_clock));
+        self.u.f1v(.wave, 128, &self.wave_n[0]);
+        self.u.f1(.scale, self.scale);
+        self.u.f1(.reach, self.reach);
+        self.u.f1(.grain, self.grain);
     }
 
     pub fn deinit(self: *Context) void {

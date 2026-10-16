@@ -6,6 +6,8 @@ const spectral = @import("spectral.zig");
 const smoothstep = @import("bands.zig").smoothstep;
 const clock = @import("clock.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -35,12 +37,13 @@ pub const Context = struct {
     /// so it is built here once rather than in every pixel.
     seeds: [n_seeds][4]f32 = [_][4]f32{.{ 0, 0, 0, 0 }} ** n_seeds,
 
-    cached_program: c.GLuint = 0,
-    loc_flow: c.GLint = -1,
-    loc_bands: c.GLint = -1,
-    loc_bass: c.GLint = -1,
-    loc_beat: c.GLint = -1,
-    loc_seeds: c.GLint = -1,
+    u: Uniforms(.{
+        .flow = "iBloomFlow",
+        .bands = "iBloomBands[0]",
+        .bass = "iBloomBass",
+        .beat = "iBloomBeat",
+        .seeds = "iBloomSeeds[0]",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
         const music = try spectral.Analyzer.init(allocator, params);
@@ -88,20 +91,12 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_flow = c.glGetUniformLocation(prog.program, "iBloomFlow");
-            self.loc_bands = c.glGetUniformLocation(prog.program, "iBloomBands[0]");
-            self.loc_bass = c.glGetUniformLocation(prog.program, "iBloomBass");
-            self.loc_beat = c.glGetUniformLocation(prog.program, "iBloomBeat");
-            self.loc_seeds = c.glGetUniformLocation(prog.program, "iBloomSeeds[0]");
-        }
-        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
-        if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.music.bands.smooth[0]);
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.onset.beat);
-        if (self.loc_seeds >= 0) c.glUniform4fv(self.loc_seeds, n_seeds, @ptrCast(&self.seeds[0]));
+        self.u.use(prog.program);
+        self.u.f1(.flow, @floatCast(self.flow));
+        self.u.f1v(.bands, 6, &self.music.bands.smooth[0]);
+        self.u.f1(.bass, self.music.bass());
+        self.u.f1(.beat, self.music.onset.beat);
+        self.u.f4v(.seeds, n_seeds, &self.seeds[0]);
     }
 
     pub fn deinit(self: *Context) void {

@@ -7,6 +7,8 @@ const audio_mod = @import("../audio.zig");
 const bands_mod = @import("../bands.zig");
 const boids_mod = @import("boids.zig");
 
+const Uniforms = @import("../uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -237,19 +239,18 @@ pub const Context = struct {
     canvas_h: c.GLsizei = 0,
     compute: ?shader_mod.ShaderProgram = null,
 
-    // Cached uniform locations on the compute program.
-    loc_field: c.GLint = -1,
-    loc_pixel: c.GLint = -1,
-    loc_time: c.GLint = -1,
-    loc_beat: c.GLint = -1,
-    loc_bass: c.GLint = -1,
-    loc_energy: c.GLint = -1,
-    loc_mute: c.GLint = -1,
-    loc_contour: c.GLint = -1,
-
-    // Cached location on the main (upscale) program.
-    cached_main: c.GLuint = 0,
-    loc_canvas: c.GLint = -1,
+    // Uniforms on the compute program, and on the main (upscale) program.
+    cu: Uniforms(.{
+        .field = "iField",
+        .pixel = "iPixel",
+        .time = "iSwarmTime",
+        .beat = "iBeat",
+        .bass = "iBass",
+        .energy = "iEnergy",
+        .mute = "iMute",
+        .contour = "iContour",
+    }) = .{},
+    mu: Uniforms(.{ .canvas = "iCanvas" }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
         const audio = try audio_mod.spawnIfMusic(allocator, params);
@@ -386,15 +387,6 @@ pub const Context = struct {
         if (self.compute != null) return true;
 
         self.compute = shader_mod.ShaderProgram.init(compute_frag) catch return false;
-        const cp = &self.compute.?;
-        self.loc_field = c.glGetUniformLocation(cp.program, "iField");
-        self.loc_pixel = c.glGetUniformLocation(cp.program, "iPixel");
-        self.loc_time = c.glGetUniformLocation(cp.program, "iSwarmTime");
-        self.loc_beat = c.glGetUniformLocation(cp.program, "iBeat");
-        self.loc_bass = c.glGetUniformLocation(cp.program, "iBass");
-        self.loc_energy = c.glGetUniformLocation(cp.program, "iEnergy");
-        self.loc_mute = c.glGetUniformLocation(cp.program, "iMute");
-        self.loc_contour = c.glGetUniformLocation(cp.program, "iContour");
 
         c.glGenTextures(1, &self.field_tex);
         c.glBindTexture(c.GL_TEXTURE_2D, self.field_tex);
@@ -429,12 +421,12 @@ pub const Context = struct {
         const cp = &self.compute.?;
 
         // ---- compute pass: render the effect at one fragment per block ----
-        c.glUseProgram(cp.program);
+        self.cu.use(cp.program);
 
         c.glActiveTexture(c.GL_TEXTURE0);
         c.glBindTexture(c.GL_TEXTURE_2D, self.field_tex);
         c.glTexSubImage2D(c.GL_TEXTURE_2D, 0, 0, 0, field_w, field_h, c.GL_RGBA, c.GL_UNSIGNED_BYTE, &self.accum.bytes[0]);
-        if (self.loc_field >= 0) c.glUniform1i(self.loc_field, 0);
+        self.cu.int(.field, 0);
 
         if (self.palette) |p| {
             if (!self.palette_uploaded) {
@@ -453,14 +445,13 @@ pub const Context = struct {
         }
         if (cp.i_window_count >= 0) c.glUniform1i(cp.i_window_count, self.window_count);
 
-        if (self.loc_pixel >= 0) c.glUniform1f(self.loc_pixel, self.pixel);
-        // Effect-local time (fire.zig pattern) for noise precision.
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.an.beat);
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.an.bass);
-        if (self.loc_energy >= 0) c.glUniform1f(self.loc_energy, self.an.energy);
-        if (self.loc_mute >= 0) c.glUniform1f(self.loc_mute, self.mute);
-        if (self.loc_contour >= 0) c.glUniform1f(self.loc_contour, if (self.contour) 1.0 else 0.0);
+        self.cu.f1(.pixel, self.pixel);
+        self.cu.f1(.time, @floatCast(self.now));
+        self.cu.f1(.beat, self.an.beat);
+        self.cu.f1(.bass, self.an.bass);
+        self.cu.f1(.energy, self.an.energy);
+        self.cu.f1(.mute, self.mute);
+        self.cu.f1(.contour, if (self.contour) 1.0 else 0.0);
 
         c.glBindFramebuffer(c.GL_FRAMEBUFFER, self.fbo);
         c.glViewport(0, 0, self.canvas_w, self.canvas_h);
@@ -469,14 +460,10 @@ pub const Context = struct {
         c.glBindFramebuffer(c.GL_FRAMEBUFFER, 0);
 
         // ---- main pass setup: hand the canvas to the upscale shader ----
-        c.glUseProgram(prog.program);
-        if (self.cached_main != prog.program) {
-            self.cached_main = prog.program;
-            self.loc_canvas = c.glGetUniformLocation(prog.program, "iCanvas");
-        }
+        self.mu.use(prog.program);
         c.glActiveTexture(c.GL_TEXTURE0);
         c.glBindTexture(c.GL_TEXTURE_2D, self.canvas_tex);
-        if (self.loc_canvas >= 0) c.glUniform1i(self.loc_canvas, 0);
+        self.mu.int(.canvas, 0);
     }
 
     pub fn deinit(self: *Context) void {

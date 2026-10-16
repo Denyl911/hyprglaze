@@ -4,6 +4,8 @@ const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
 const spectral = @import("spectral.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -18,9 +20,10 @@ pub const Context = struct {
     allocator: std.mem.Allocator,
     music: spectral.Analyzer = .{},
 
-    cached_program: c.GLuint = 0,
-    loc_bands: c.GLint = -1,
-    loc_energy: c.GLint = -1,
+    u: Uniforms(.{
+        .bands = "iFluidBands[0]",
+        .energy = "iFluidEnergy",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) !Context {
         const music = try spectral.Analyzer.init(allocator, params);
@@ -33,14 +36,9 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_bands = c.glGetUniformLocation(prog.program, "iFluidBands[0]");
-            self.loc_energy = c.glGetUniformLocation(prog.program, "iFluidEnergy");
-        }
-        if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.music.bands.smooth[0]);
-        if (self.loc_energy >= 0) c.glUniform1f(self.loc_energy, self.music.bands.energy_ema);
+        self.u.use(prog.program);
+        self.u.f1v(.bands, 6, &self.music.bands.smooth[0]);
+        self.u.f1(.energy, self.music.bands.energy_ema);
     }
 
     pub fn deinit(self: *Context) void {

@@ -4,6 +4,8 @@ const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
 const spectral = @import("spectral.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -33,13 +35,14 @@ pub const Context = struct {
     length: f32,
     brightness: f32,
 
-    cached_program: c.GLuint = 0,
-    loc_flow: c.GLint = -1,
-    loc_bass: c.GLint = -1,
-    loc_beat: c.GLint = -1,
-    loc_cell: c.GLint = -1,
-    loc_len: c.GLint = -1,
-    loc_bright: c.GLint = -1,
+    u: Uniforms(.{
+        .flow = "iFurFlow",
+        .bass = "iFurBass",
+        .beat = "iFurBeat",
+        .cell = "iFurCell",
+        .len = "iFurLength",
+        .bright = "iFurBright",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) !Context {
         const music = try spectral.Analyzer.init(allocator, params);
@@ -59,22 +62,13 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_flow = c.glGetUniformLocation(prog.program, "iFurFlow");
-            self.loc_bass = c.glGetUniformLocation(prog.program, "iFurBass");
-            self.loc_beat = c.glGetUniformLocation(prog.program, "iFurBeat");
-            self.loc_cell = c.glGetUniformLocation(prog.program, "iFurCell");
-            self.loc_len = c.glGetUniformLocation(prog.program, "iFurLength");
-            self.loc_bright = c.glGetUniformLocation(prog.program, "iFurBright");
-        }
-        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.onset.beat);
-        if (self.loc_cell >= 0) c.glUniform1f(self.loc_cell, self.cell);
-        if (self.loc_len >= 0) c.glUniform1f(self.loc_len, self.length);
-        if (self.loc_bright >= 0) c.glUniform1f(self.loc_bright, self.brightness);
+        self.u.use(prog.program);
+        self.u.f1(.flow, @floatCast(self.flow));
+        self.u.f1(.bass, self.music.bass());
+        self.u.f1(.beat, self.music.onset.beat);
+        self.u.f1(.cell, self.cell);
+        self.u.f1(.len, self.length);
+        self.u.f1(.bright, self.brightness);
     }
 
     pub fn deinit(self: *Context) void {

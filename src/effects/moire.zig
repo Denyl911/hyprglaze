@@ -5,6 +5,8 @@ const effects = @import("../effects.zig");
 const audio_mod = @import("audio.zig");
 const bands_mod = @import("bands.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -117,14 +119,15 @@ pub const Context = struct {
     /// overlaps between bodies read as moire.
     grating: f32 = 4.0,
 
-    cached_program: c.GLuint = 0,
-    loc_fuzz: c.GLint = -1,
-    loc_ringfreq: c.GLint = -1,
-    loc_grating: c.GLint = -1,
-    loc_flow: c.GLint = -1,
-    loc_bands: c.GLint = -1,
-    loc_beat: c.GLint = -1,
-    loc_vel: c.GLint = -1,
+    u: Uniforms(.{
+        .fuzz = "iFuzz",
+        .ringfreq = "iRingFreq",
+        .grating = "iGrating",
+        .flow = "iFlow",
+        .bands = "iBands[0]",
+        .beat = "iBeat",
+        .vel = "iVel[0]",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
         const audio = try audio_mod.spawnIfMusic(allocator, params);
@@ -353,18 +356,8 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
 
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_fuzz = c.glGetUniformLocation(prog.program, "iFuzz");
-            self.loc_ringfreq = c.glGetUniformLocation(prog.program, "iRingFreq");
-            self.loc_grating = c.glGetUniformLocation(prog.program, "iGrating");
-            self.loc_flow = c.glGetUniformLocation(prog.program, "iFlow");
-            self.loc_bands = c.glGetUniformLocation(prog.program, "iBands[0]");
-            self.loc_beat = c.glGetUniformLocation(prog.program, "iBeat");
-            self.loc_vel = c.glGetUniformLocation(prog.program, "iVel[0]");
-        }
+        self.u.use(prog.program);
 
         // Slot layout: (x, y, size, color_idx + 16*trail_age). Age 0 = head.
         // Spacing uses trail_len+1 so the oldest sample stays short of a full
@@ -402,17 +395,17 @@ pub const Context = struct {
             c.glUniform1i(prog.i_particle_count, @intCast(slot));
         }
 
-        if (self.loc_fuzz >= 0) c.glUniform1f(self.loc_fuzz, if (self.fuzz) 1.0 else 0.0);
-        if (self.loc_ringfreq >= 0) c.glUniform1f(self.loc_ringfreq, 2.0 * std.math.pi / self.wavelength);
-        if (self.loc_grating >= 0) c.glUniform1f(self.loc_grating, self.grating);
-        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
-        if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.bands[0]);
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.beat);
-        if (self.loc_vel >= 0) {
+        self.u.f1(.fuzz, if (self.fuzz) 1.0 else 0.0);
+        self.u.f1(.ringfreq, 2.0 * std.math.pi / self.wavelength);
+        self.u.f1(.grating, self.grating);
+        self.u.f1(.flow, @floatCast(self.flow));
+        self.u.f1v(.bands, 6, &self.bands[0]);
+        self.u.f1(.beat, self.beat);
+        if (self.u.loc(.vel) >= 0) {
             // Per-body velocity for the shader's Doppler term (one vec2 each).
             var vels: [max_bodies][2]f32 = undefined;
             for (0..self.count) |i| vels[i] = self.bodies[i].vel;
-            c.glUniform2fv(self.loc_vel, @intCast(self.count), @ptrCast(&vels[0]));
+            self.u.f2v(.vel, @intCast(self.count), &vels[0]);
         }
     }
 

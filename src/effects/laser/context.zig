@@ -6,6 +6,8 @@ const effects = @import("../../effects.zig");
 const spectral = @import("../spectral.zig");
 const trace = @import("trace.zig");
 
+const Uniforms = @import("../uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -65,22 +67,23 @@ pub const Context = struct {
     beam_count: usize,
     now: f64 = 0,
 
-    cached_program: c.GLuint = 0,
-    loc_seg: c.GLint = -1,
-    loc_int: c.GLint = -1,
-    loc_count: c.GLint = -1,
-    loc_split: c.GLint = -1,
-    loc_width: c.GLint = -1,
-    loc_color: c.GLint = -1,
-    loc_color2: c.GLint = -1,
-    loc_time: c.GLint = -1,
-    loc_smoke: c.GLint = -1,
-    loc_speckle: c.GLint = -1,
-    loc_seed: c.GLint = -1,
-    loc_band: c.GLint = -1,
-    loc_phase: c.GLint = -1,
-    loc_pulse: c.GLint = -1,
-    loc_react: c.GLint = -1,
+    u: Uniforms(.{
+        .seg = "iLaserSeg[0]",
+        .int = "iLaserLeg[0]",
+        .count = "iLaserCount",
+        .split = "iLaserSplit",
+        .width = "iLaserWidth",
+        .color = "iLaserColor",
+        .color2 = "iLaserColor2",
+        .time = "iLaserTime",
+        .smoke = "iLaserSmoke",
+        .speckle = "iLaserSpeckle",
+        .seed = "iLaserSeed",
+        .band = "iLaserBand",
+        .phase = "iLaserPhase",
+        .pulse = "iLaserPulse",
+        .react = "iLaserReact",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
         const music = try spectral.Analyzer.init(allocator, params);
@@ -161,25 +164,7 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_seg = c.glGetUniformLocation(prog.program, "iLaserSeg[0]");
-            self.loc_int = c.glGetUniformLocation(prog.program, "iLaserLeg[0]");
-            self.loc_count = c.glGetUniformLocation(prog.program, "iLaserCount");
-            self.loc_split = c.glGetUniformLocation(prog.program, "iLaserSplit");
-            self.loc_width = c.glGetUniformLocation(prog.program, "iLaserWidth");
-            self.loc_color = c.glGetUniformLocation(prog.program, "iLaserColor");
-            self.loc_color2 = c.glGetUniformLocation(prog.program, "iLaserColor2");
-            self.loc_time = c.glGetUniformLocation(prog.program, "iLaserTime");
-            self.loc_smoke = c.glGetUniformLocation(prog.program, "iLaserSmoke");
-            self.loc_speckle = c.glGetUniformLocation(prog.program, "iLaserSpeckle");
-            self.loc_seed = c.glGetUniformLocation(prog.program, "iLaserSeed");
-            self.loc_band = c.glGetUniformLocation(prog.program, "iLaserBand");
-            self.loc_phase = c.glGetUniformLocation(prog.program, "iLaserPhase");
-            self.loc_pulse = c.glGetUniformLocation(prog.program, "iLaserPulse");
-            self.loc_react = c.glGetUniformLocation(prog.program, "iLaserReact");
-        }
+        self.u.use(prog.program);
         // Beams back to back; legs from iLaserSplit on belong to beam 2.
         var seg: [max_segments][4]f32 = undefined;
         // (intensity, light arriving at the leg's start, flare twinkle,
@@ -201,27 +186,27 @@ pub const Context = struct {
         }
         if (self.beam_count == 1) split = total;
         const n: c_int = @intCast(total);
-        if (self.loc_seg >= 0 and n > 0) c.glUniform4fv(self.loc_seg, n, @ptrCast(&seg[0]));
-        if (self.loc_int >= 0 and n > 0) c.glUniform4fv(self.loc_int, n, @ptrCast(&legs[0]));
-        if (self.loc_count >= 0) c.glUniform1i(self.loc_count, n);
-        if (self.loc_split >= 0) c.glUniform1i(self.loc_split, @intCast(split));
-        if (self.loc_width >= 0) c.glUniform1f(self.loc_width, self.beam_width);
-        if (self.loc_color >= 0) c.glUniform1i(self.loc_color, self.beams[0].color);
-        if (self.loc_color2 >= 0) c.glUniform1i(self.loc_color2, self.beams[1].color);
+        self.u.f4v(.seg, n, &seg[0]);
+        self.u.f4v(.int, n, &legs[0]);
+        self.u.int(.count, n);
+        self.u.int(.split, @intCast(split));
+        self.u.f1(.width, self.beam_width);
+        self.u.int(.color, self.beams[0].color);
+        self.u.int(.color2, self.beams[1].color);
         // Effect-local clock keeps shader time small (fire.zig pattern).
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(@mod(self.now, 1000.0)));
-        if (self.loc_smoke >= 0) c.glUniform1f(self.loc_smoke, self.smoke);
-        if (self.loc_speckle >= 0) c.glUniform1f(self.loc_speckle, self.speckle);
-        if (self.loc_seed >= 0) c.glUniform1f(self.loc_seed, self.seed);
+        self.u.f1(.time, @floatCast(@mod(self.now, 1000.0)));
+        self.u.f1(.smoke, self.smoke);
+        self.u.f1(.speckle, self.speckle);
+        self.u.f1(.seed, self.seed);
         const e = self.bandEnergy();
-        if (self.loc_band >= 0) c.glUniform2f(self.loc_band, e[0], e[1]);
-        if (self.loc_phase >= 0) c.glUniform2f(self.loc_phase, self.phase[0], self.phase[1]);
-        if (self.loc_react >= 0) c.glUniform1f(self.loc_react, if (self.music.audio != null) self.react else 0.0);
-        if (self.loc_pulse >= 0) {
+        self.u.f2(.band, e[0], e[1]);
+        self.u.f2(.phase, self.phase[0], self.phase[1]);
+        self.u.f1(.react, if (self.music.audio != null) self.react else 0.0);
+        if (self.u.loc(.pulse) >= 0) {
             // Pulse age as a fraction of its life; 1 = idle.
             var ages: [max_pulses]f32 = undefined;
             for (self.pulses, 0..) |age, i| ages[i] = age / pulse_life;
-            c.glUniform4f(self.loc_pulse, ages[0], ages[1], ages[2], ages[3]);
+            self.u.f4(.pulse, ages[0], ages[1], ages[2], ages[3]);
         }
     }
 

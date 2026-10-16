@@ -3,6 +3,8 @@ const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
 
+const Uniforms = @import("uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -115,22 +117,23 @@ pub const Context = struct {
 
     // -- GL --
     tex: c.GLuint = 0,
-    cached_program: c.GLuint = 0,
-    loc_grid: c.GLint = -1,
-    loc_grid_dim: c.GLint = -1,
-    loc_cell_px: c.GLint = -1,
-    loc_states: c.GLint = -1,
-    loc_tick_frac: c.GLint = -1,
-    loc_time: c.GLint = -1,
-    loc_accent: c.GLint = -1,
-    loc_accent2: c.GLint = -1,
-    loc_misconv: c.GLint = -1,
-    loc_halation: c.GLint = -1,
-    loc_vignette: c.GLint = -1,
-    loc_scanbar: c.GLint = -1,
-    loc_bass: c.GLint = -1,
-    loc_treble: c.GLint = -1,
-    loc_beat: c.GLint = -1,
+    u: Uniforms(.{
+        .grid = "iGrid",
+        .grid_dim = "iGridDim",
+        .cell_px = "iCellPx",
+        .states = "iStates",
+        .tick_frac = "iTickFrac",
+        .time = "iWhorlTime",
+        .accent = "iWhorlAccent",
+        .accent2 = "iWhorlAccent2",
+        .misconv = "iWhorlMisconv",
+        .halation = "iWhorlHalation",
+        .vignette = "iWhorlVignette",
+        .scanbar = "iWhorlScanbar",
+        .bass = "iWhorlBass",
+        .treble = "iWhorlTreble",
+        .beat = "iWhorlBeat",
+    }) = .{},
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
         const cell_px = std.math.clamp(params.getFloat("cell_px", 10.0), 4.0, 64.0);
@@ -497,40 +500,23 @@ pub const Context = struct {
             self.dirty = false;
         }
 
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_grid = c.glGetUniformLocation(prog.program, "iGrid");
-            self.loc_grid_dim = c.glGetUniformLocation(prog.program, "iGridDim");
-            self.loc_cell_px = c.glGetUniformLocation(prog.program, "iCellPx");
-            self.loc_states = c.glGetUniformLocation(prog.program, "iStates");
-            self.loc_tick_frac = c.glGetUniformLocation(prog.program, "iTickFrac");
-            self.loc_time = c.glGetUniformLocation(prog.program, "iWhorlTime");
-            self.loc_accent = c.glGetUniformLocation(prog.program, "iWhorlAccent");
-            self.loc_accent2 = c.glGetUniformLocation(prog.program, "iWhorlAccent2");
-            self.loc_misconv = c.glGetUniformLocation(prog.program, "iWhorlMisconv");
-            self.loc_halation = c.glGetUniformLocation(prog.program, "iWhorlHalation");
-            self.loc_vignette = c.glGetUniformLocation(prog.program, "iWhorlVignette");
-            self.loc_scanbar = c.glGetUniformLocation(prog.program, "iWhorlScanbar");
-            self.loc_bass = c.glGetUniformLocation(prog.program, "iWhorlBass");
-            self.loc_treble = c.glGetUniformLocation(prog.program, "iWhorlTreble");
-            self.loc_beat = c.glGetUniformLocation(prog.program, "iWhorlBeat");
-        }
+        self.u.use(prog.program);
 
-        if (self.loc_grid >= 0) c.glUniform1i(self.loc_grid, 0);
-        if (self.loc_grid_dim >= 0) c.glUniform2f(self.loc_grid_dim, @floatFromInt(self.gw), @floatFromInt(self.gh));
-        if (self.loc_cell_px >= 0) c.glUniform1f(self.loc_cell_px, self.cell_px);
-        if (self.loc_states >= 0) c.glUniform1f(self.loc_states, @floatFromInt(self.n_states));
-        if (self.loc_tick_frac >= 0) c.glUniform1f(self.loc_tick_frac, self.tick_frac);
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
-        if (self.loc_accent >= 0) c.glUniform1f(self.loc_accent, self.accent);
-        if (self.loc_accent2 >= 0) c.glUniform1f(self.loc_accent2, self.accent2);
-        if (self.loc_misconv >= 0) c.glUniform1f(self.loc_misconv, self.misconv);
-        if (self.loc_halation >= 0) c.glUniform1f(self.loc_halation, self.halation);
-        if (self.loc_vignette >= 0) c.glUniform1f(self.loc_vignette, self.vignette);
-        if (self.loc_scanbar >= 0) c.glUniform1f(self.loc_scanbar, self.scanbar);
-        if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.music.bass());
-        if (self.loc_treble >= 0) c.glUniform1f(self.loc_treble, self.music.treble());
-        if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.music.beat());
+        self.u.int(.grid, 0);
+        self.u.f2(.grid_dim, @floatFromInt(self.gw), @floatFromInt(self.gh));
+        self.u.f1(.cell_px, self.cell_px);
+        self.u.f1(.states, @floatFromInt(self.n_states));
+        self.u.f1(.tick_frac, self.tick_frac);
+        self.u.f1(.time, @floatCast(self.now));
+        self.u.f1(.accent, self.accent);
+        self.u.f1(.accent2, self.accent2);
+        self.u.f1(.misconv, self.misconv);
+        self.u.f1(.halation, self.halation);
+        self.u.f1(.vignette, self.vignette);
+        self.u.f1(.scanbar, self.scanbar);
+        self.u.f1(.bass, self.music.bass());
+        self.u.f1(.treble, self.music.treble());
+        self.u.f1(.beat, self.music.beat());
     }
 
     pub fn deinit(self: *Context) void {

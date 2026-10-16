@@ -4,6 +4,7 @@
 const std = @import("std");
 const shader_mod = @import("../../core/shader.zig");
 const texture_mod = @import("../../core/texture.zig");
+const Uniforms = @import("../uniforms.zig").Uniforms;
 
 const c = @cImport({ @cInclude("GLES3/gl3.h"); });
 
@@ -78,6 +79,7 @@ pub const Sheet = struct {
     path_len: usize = 0,
     tex: ?texture_mod.Texture = null,
     tried: bool = false,
+    u: Uniforms(.{ .sprite = "iSprite" }) = .{},
 
     /// Copies `path`: config strings die with their config on a reload.
     pub fn init(path: []const u8) Sheet {
@@ -116,11 +118,10 @@ pub fn upload(
     scale: f32,
     facing_right: bool,
 ) void {
-    c.glUseProgram(prog.program);
+    sheet.u.use(prog.program);
     if (sheet.texture()) |tex| {
         tex.bind(0);
-        const loc = c.glGetUniformLocation(prog.program, "iSprite");
-        if (loc >= 0) c.glUniform1i(loc, 0);
+        sheet.u.int(.sprite, 0);
     }
     const facing: f32 = if (facing_right) 1.0 else -1.0;
     const col_f: f32 = @floatFromInt(play.frame);

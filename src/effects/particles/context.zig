@@ -4,6 +4,8 @@ const config_mod = @import("../../core/config.zig");
 const effects = @import("../../effects.zig");
 const system = @import("system.zig");
 
+const Uniforms = @import("../uniforms.zig").Uniforms;
+
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
 });
@@ -21,10 +23,11 @@ pub const Context = struct {
     last_ws_switches: u32 = 0,
     last_slide: f32 = 1.0,
 
-    cached_program: c.GLuint = 0,
-    loc_balls: c.GLint = -1,
-    loc_ball_count: c.GLint = -1,
-    loc_pops: c.GLint = -1,
+    u: Uniforms(.{
+        .balls = "iBalls[0]",
+        .ball_count = "iBallCount",
+        .pops = "iPops[0]",
+    }) = .{},
 
     pub fn init(_: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) Context {
         const count: u32 = @intCast(std.math.clamp(params.getInt("count", 60), 0, system.max_balls));
@@ -77,13 +80,7 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        c.glUseProgram(prog.program);
-        if (self.cached_program != prog.program) {
-            self.cached_program = prog.program;
-            self.loc_balls = c.glGetUniformLocation(prog.program, "iBalls[0]");
-            self.loc_ball_count = c.glGetUniformLocation(prog.program, "iBallCount");
-            self.loc_pops = c.glGetUniformLocation(prog.program, "iPops[0]");
-        }
+        self.u.use(prog.program);
 
         // Two vec4 per ball: (x, y, r, colour), (streak tail x, y, 0, 0).
         var buf: [system.max_balls * 2][4]f32 = undefined;
@@ -103,17 +100,17 @@ pub const Context = struct {
             buf[i * 2] = .{ b.x[0], b.x[1], b.r, b.color };
             buf[i * 2 + 1] = .{ tx, ty, 0, 0 };
         }
-        if (self.loc_balls >= 0 and count > 0) c.glUniform4fv(self.loc_balls, @intCast(count * 2), @ptrCast(&buf[0]));
-        if (self.loc_ball_count >= 0) c.glUniform1i(self.loc_ball_count, @intCast(count));
+        self.u.f4v(.balls, @intCast(count * 2), &buf[0]);
+        self.u.int(.ball_count, @intCast(count));
 
-        if (self.loc_pops >= 0) {
+        if (self.u.loc(.pops) >= 0) {
             // (x, y, r, colour + age): age in [0, 1), colour's integer part
             // picks the palette slot.
             var pv: [system.max_pops][4]f32 = undefined;
             for (self.sys.pops, 0..) |p, i| {
                 pv[i] = .{ p.x[0], p.x[1], if (p.age < 1) p.r else 0, @floor(p.color * 5.99) + @min(p.age, 0.999) };
             }
-            c.glUniform4fv(self.loc_pops, system.max_pops, @ptrCast(&pv[0]));
+            self.u.f4v(.pops, system.max_pops, &pv[0]);
         }
     }
 
