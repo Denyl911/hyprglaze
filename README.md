@@ -306,7 +306,7 @@ would render on it.
 
 ### Audio effects
 
-Effects that react to sound (visualizer, milkdrop, starfield, and others marked audio-reactive above) capture system audio via PipeWire/PulseAudio. The output monitor is auto-detected. To use a different sink:
+Effects that react to sound (visualizer, milkdrop, starfield, and others marked audio-reactive above) capture system audio via PipeWire/PulseAudio. The output monitor is auto-detected. Effects that only use music to modulate themselves accept `music = false`, which skips capture entirely and gives their quiet look. To use a different sink:
 
 ```toml
 [visualizer]
@@ -347,7 +347,7 @@ The watcher emits one geometry event per monitor, carrying that monitor's active
 | Uniform | Type | Description |
 |---------|------|-------------|
 | `iResolution` | `vec3` | Buffer dimensions in pixels. On a scaled display this is larger than the surface's logical size — a 3840x2160 monitor at scale 1.25 has a 3072x1728 surface and renders a 3840x2160 buffer. Window rects and the cursor arrive in the same space, so nothing has to convert; just don't assume it equals what `hyprctl monitors` calls the size |
-| `iTime` | `float` | Seconds since start |
+| `iTime` | `float` | Seconds since start, wrapped every 10000s so the f32 keeps its precision; feed it to periodic functions, or keep an effect-local clock |
 | `iMouse` | `vec4` | Cursor position, sampled as the frame renders |
 | `iWindow` | `vec4` | Focused window rect, tracking its animation |
 | `iWindows[32]` | `vec4[]` | The window strip: active workspace rects plus adjacent-workspace rects parked one screen off-screen, all live; the whole strip slides on a workspace switch |
@@ -362,7 +362,7 @@ The watcher emits one geometry event per monitor, carrying that monitor's active
 | `iParticleCount` | `int` | Number of active entries |
 | `iSprite` | `sampler2D` | Sprite sheet texture / FBO feedback |
 
-Effects are free to upload their own uniforms and textures instead: `particles` sends its balls as `iBalls`, `laser` its beam legs as `iLaser*`, and `ivy` bins thousands of stems and leaves into screen tiles through data textures so each pixel visits only what can reach it.
+Effects are free to upload their own uniforms and textures instead: `particles` sends its balls as `iBalls`, `laser` its beam legs as `iLaser*`, and `ivy` bins thousands of stems and leaves into screen tiles through data textures so each pixel visits only what can reach it. `src/effects/uniforms.zig` caches an effect's own uniform locations for it.
 
 ## Adding an Effect
 
@@ -374,12 +374,20 @@ Effects are free to upload their own uniforms and textures instead: `particles` 
 
 New effects are picked up by `--list-effects` automatically via comptime reflection on the `Effect` union.
 
+A few rules keep effects safe across reloads and graphics rebuilds:
+
+- `init` must not touch GL. It runs before the context it will draw with exists (at startup, and for a fresh context after a lost one); create textures, framebuffers and programs on the first `upload`, and delete them in `deinit`.
+- Declare your own uniforms with `Uniforms(.{ .name = "iMyUniform", ... })` from `uniforms.zig`, call `use(program)` at the top of `upload`, then set them by name.
+- For sound, hold a `spectral.Analyzer`: it honours the effect's `music` setting, gives you six auto-gained bands, a kick detector (`update` returns true on a kick) and `bass()`/`treble()`, and stays at zero without capture.
+- Accumulate clocks in `f64` and pass oscillator arguments through `clock.phase`/`clock.cycles`: an `f32` seconds counter stalls after a day or two of uptime.
+
 ## Testing
 
-`zig build test` covers the parsers, the coordinate transform, the config, the
-window animation replay, the particle physics, and the laser tracer. Anything
-involving a compositor runs in a nested Hyprland instead, so a single physical
-monitor is enough to test the multi-monitor paths:
+`zig build test` covers the parsers, the coordinate transform, the config and
+file helpers, the window strip and its per-frame following, the window
+animation replay, the particle physics, the laser tracer, the effect clocks and
+the sprite player. Anything involving a compositor runs in a nested Hyprland
+instead, so a single physical monitor is enough to test the multi-monitor paths:
 
 ```
 zig build
@@ -391,6 +399,8 @@ scripts/hypr-harness.sh scripts/cursor.probe.sh        # crosshair vs the real p
 scripts/hypr-harness.sh scripts/ivy.probe.sh           # growth, workspace round-trips, dieback
 scripts/hypr-harness.sh scripts/particles.probe.sh     # the gravity well, focus change, batting
 scripts/hypr-harness.sh scripts/laser.probe.sh         # beams aimed at a few points
+scripts/hypr-harness.sh scripts/flux-life.probe.sh     # magnets through open, close, workspace switch
+HG_EFFECT=flux scripts/hypr-harness.sh scripts/effect.probe.sh   # any effect, a run of grabs
 ```
 
 The harness boots a second Hyprland with two outputs, the right-hand one at a
@@ -406,8 +416,14 @@ which rule to add when that happens.
 
 The nested outputs live on the host's `special:harness` workspace, and a hidden
 surface is throttled to `misc:render_unfocused_fps` (15), which reads as lag in
-anything timed. Probes that measure timing call the harness's `show_harness`,
-which puts them on screen first.
+anything timed. Probes that measure timing (and `particles`, whose physics steps
+per frame) call the harness's `show_harness`, which puts them on screen first;
+screenshot-only probes stay hidden unless `HG_SHOW=1`. `HG_BMODE=2560x1440`
+runs the second output nearer a real monitor's pixel density, and
+`HG_SHOTS`/`HG_GAP`/`HG_THEME` tune the effect probe. A fully headless host
+isn't possible with Hyprland 0.56: its headless outputs report 0x0, and neither
+headless sway (no `xdg_wm_base` v6) nor headless mutter (no XR24 buffers on
+NVIDIA) can host its nested backend.
 
 `scripts/*.probe.sh` record measurements: of compositor behaviour the code
 depends on (`geom-anim.probe.sh` is how `w.at` was shown to be the goal rect),
