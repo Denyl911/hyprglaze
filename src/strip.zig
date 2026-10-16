@@ -202,6 +202,73 @@ pub fn deriveRawState(
     return out;
 }
 
+/// Move the drawn window rects one frame toward `targets` (where each
+/// window will be on screen when the frame is shown).
+///
+/// - Mid workspace slide (`camera` set), the whole strip — targets already
+///   carry their rel offsets — shifts by the camera. Positions are
+///   analytic, so per-frame smoothing is bypassed.
+/// - A changed window count, or `snap` (a workspace boundary crossed
+///   without a slide), snaps every rect to its target.
+/// - Otherwise each rect is smoothed by `alpha` toward the target with the
+///   same address. Hyprland can reorder windows on focus change; matching by
+///   address keeps the pairing stable across the whole strip. Any mismatch
+///   means the set changed, so it snaps rather than glide unrelated windows
+///   into each other. This is also the landing path after a slide settles:
+///   the camera's last offset is <= 0.1% of a span, smoothed away invisibly.
+pub fn follow(
+    shown: *[max]WindowRect,
+    shown_count: *u8,
+    targets: []const WindowRect,
+    camera: ?f32,
+    axis: workspace_slide.Axis,
+    snap: bool,
+    alpha: f32,
+) void {
+    const n: u8 = @intCast(targets.len);
+    if (camera) |cam| {
+        for (targets, 0..) |t, i| {
+            shown[i] = t;
+            applyOffset(&shown[i].x, &shown[i].y, axis, cam);
+        }
+        shown_count.* = n;
+        return;
+    }
+    if (n == shown_count.* and !snap) {
+        if (matchByAddress(shown[0..n], targets)) |matched| {
+            for (shown[0..n], matched[0..n]) |*s, t| {
+                s.x += (t.x - s.x) * alpha;
+                s.y += (t.y - s.y) * alpha;
+                s.w += (t.w - s.w) * alpha;
+                s.h += (t.h - s.h) * alpha;
+                s.address = t.address;
+            }
+            return;
+        }
+    }
+    @memcpy(shown[0..n], targets);
+    shown_count.* = n;
+}
+
+/// `targets` reordered to line up with `shown` by address, or null when
+/// the two are not the same set (an unknown or zero address).
+fn matchByAddress(shown: []const WindowRect, targets: []const WindowRect) ?[max]WindowRect {
+    var used = [_]bool{false} ** max;
+    var matched: [max]WindowRect = undefined;
+    next: for (targets) |t| {
+        if (t.address == 0) return null;
+        for (shown, 0..) |s, i| {
+            if (!used[i] and s.address == t.address) {
+                used[i] = true;
+                matched[i] = t;
+                continue :next;
+            }
+        }
+        return null;
+    }
+    return matched;
+}
+
 // --- tests ---
 
 const testing = std.testing;
@@ -335,4 +402,42 @@ test "animOffsetGl converts a layout offset into a GL delta" {
     const r = animated(&tr, .{ .x = 1, .y = 2, .w = 3, .h = 4, .address = 7 }, t0, 2.0);
     try testing.expectApproxEqAbs(@as(f32, 602), r.y, 0.01);
     try testing.expectApproxEqAbs(@as(f32, 1), r.x, 0.01);
+}
+
+fn rect(addr: u64, x: f32) WindowRect {
+    return .{ .x = x, .y = 0, .w = 10, .h = 10, .address = addr };
+}
+
+test "follow smooths each window toward the target with its address" {
+    var shown: [max]WindowRect = undefined;
+    shown[0] = rect(1, 0);
+    shown[1] = rect(2, 100);
+    var n: u8 = 2;
+    // Same set, reordered: pairing is by address, not index.
+    follow(&shown, &n, &.{ rect(2, 200), rect(1, 10) }, null, .horizontal, false, 0.5);
+    try testing.expectEqual(@as(u8, 2), n);
+    try testing.expectEqual(@as(u64, 1), shown[0].address);
+    try testing.expectEqual(@as(f32, 5), shown[0].x);
+    try testing.expectEqual(@as(f32, 150), shown[1].x);
+}
+
+test "follow snaps when the set changes, on request, or under the camera" {
+    var shown: [max]WindowRect = undefined;
+    shown[0] = rect(1, 0);
+    var n: u8 = 1;
+    // A different window with the same count snaps.
+    follow(&shown, &n, &.{rect(3, 50)}, null, .horizontal, false, 0.5);
+    try testing.expectEqual(@as(u64, 3), shown[0].address);
+    try testing.expectEqual(@as(f32, 50), shown[0].x);
+    // A count change snaps.
+    follow(&shown, &n, &.{ rect(3, 60), rect(4, 70) }, null, .horizontal, false, 0.5);
+    try testing.expectEqual(@as(u8, 2), n);
+    try testing.expectEqual(@as(f32, 60), shown[0].x);
+    // `snap` overrides smoothing for an unchanged set.
+    follow(&shown, &n, &.{ rect(3, 0), rect(4, 0) }, null, .horizontal, true, 0.5);
+    try testing.expectEqual(@as(f32, 0), shown[1].x);
+    // The camera places the strip exactly, offset along the axis.
+    follow(&shown, &n, &.{ rect(3, 20), rect(4, 30) }, -5, .horizontal, false, 0.5);
+    try testing.expectEqual(@as(f32, 15), shown[0].x);
+    try testing.expectEqual(@as(f32, 25), shown[1].x);
 }

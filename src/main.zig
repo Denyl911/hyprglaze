@@ -614,64 +614,16 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 anim_targets[i] = strip.animated(&win_anims, target_windows[i], present_time, r.scale);
             }
 
-            // Optional extra smoothing toward those (off by default)
-            const win_alpha = transition.smoothAlpha(cfg.geometry_smoothing, dt);
-
-            if (camera) |cam| {
-                // Workspace slide: the whole strip (targets already carry
-                // their rel offsets) shifts by the camera. Positions are
-                // analytic — per-frame smoothing is bypassed.
-                for (0..target_window_count) |i| {
-                    cached_windows[i] = anim_targets[i];
-                    strip.applyOffset(&cached_windows[i].x, &cached_windows[i].y, slide.axis, cam);
-                }
-                cached_window_count = target_window_count;
-            } else if (target_window_count != cached_window_count or force_snap) {
-                // Window count changed or a workspace boundary without a
-                // slide — snap all
-                for (0..target_window_count) |i| cached_windows[i] = anim_targets[i];
-                cached_window_count = target_window_count;
-            } else {
-                // Same count — smooth each cached window toward the
-                // target with the same address (Hyprland can reorder
-                // windows on focus change; matching by address keeps the
-                // pairing stable across the whole strip). Any mismatch
-                // means the set changed — snap rather than glide
-                // unrelated windows into each other. Also the landing
-                // path after a slide settles: the camera's last offset is
-                // ≤ 0.1% of a span, smoothed away invisibly.
-                var used: [hypr.max_visible_windows]bool = [_]bool{false} ** hypr.max_visible_windows;
-                var matched_targets: [hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect = undefined;
-                var all_matched = true;
-
-                match: for (0..target_window_count) |ti| {
-                    const addr = anim_targets[ti].address;
-                    if (addr != 0) {
-                        for (0..cached_window_count) |ci| {
-                            if (!used[ci] and cached_windows[ci].address == addr) {
-                                used[ci] = true;
-                                matched_targets[ci] = anim_targets[ti];
-                                continue :match;
-                            }
-                        }
-                    }
-                    all_matched = false;
-                    break;
-                }
-
-                if (all_matched) {
-                    for (0..cached_window_count) |i| {
-                        cached_windows[i].x += (matched_targets[i].x - cached_windows[i].x) * win_alpha;
-                        cached_windows[i].y += (matched_targets[i].y - cached_windows[i].y) * win_alpha;
-                        cached_windows[i].w += (matched_targets[i].w - cached_windows[i].w) * win_alpha;
-                        cached_windows[i].h += (matched_targets[i].h - cached_windows[i].h) * win_alpha;
-                        cached_windows[i].address = matched_targets[i].address;
-                    }
-                } else {
-                    for (0..target_window_count) |i| cached_windows[i] = anim_targets[i];
-                    cached_window_count = target_window_count;
-                }
-            }
+            strip.follow(
+                &cached_windows,
+                &cached_window_count,
+                anim_targets[0..target_window_count],
+                camera,
+                slide.axis,
+                force_snap,
+                // Optional extra smoothing (off by default).
+                transition.smoothAlpha(cfg.geometry_smoothing, dt),
+            );
 
             for (0..cached_window_count) |i| {
                 cached_collision_rects[i] = .{
