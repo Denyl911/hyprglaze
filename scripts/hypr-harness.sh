@@ -199,7 +199,9 @@ readonly MIN_BW=1000 MIN_BH=700
 apply_layout() {
     # The read-back below is the ground truth: the host WM may override the
     # requested mode entirely.
-    local b_mode=1600x1200
+    # HG_BMODE overrides MON_B's mode (e.g. 2560x1440 to judge an effect
+    # nearer a real monitor's pixel density).
+    local b_mode=${HG_BMODE:-1600x1200}
     case "$1" in
       x)    a_mode=800x600;  b_pos=800x0 ;;
       y)    a_mode=800x600;  b_pos=0x600 ;;
