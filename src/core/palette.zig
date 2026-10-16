@@ -91,16 +91,19 @@ pub fn loadTheme(allocator: std.mem.Allocator, theme_name: []const u8) !Palette 
     };
     defer parsed.deinit();
 
-    const themes = parsed.value.array.items;
+    const themes = themeList(parsed.value) catch |err| {
+        log.err("themes.json must be an array of theme objects", .{});
+        return err;
+    };
 
     // Case-insensitive name search
     for (themes) |theme| {
-        const obj = theme.object;
-        const name_val = obj.get("name") orelse continue;
+        if (theme != .object) continue;
+        const name_val = theme.object.get("name") orelse continue;
         if (name_val != .string) continue;
 
-        if (eqlInsensitive(name_val.string, theme_name)) {
-            return parseTheme(obj, name_val.string);
+        if (std.ascii.eqlIgnoreCase(name_val.string, theme_name)) {
+            return parseTheme(theme.object, name_val.string);
         }
     }
 
@@ -121,9 +124,9 @@ pub fn listThemes(allocator: std.mem.Allocator) !void {
     const stdout = &stdout_writer.interface;
 
     var count: usize = 0;
-    for (parsed.value.array.items) |theme| {
-        const obj = theme.object;
-        if (obj.get("name")) |name_val| {
+    for (try themeList(parsed.value)) |theme| {
+        if (theme != .object) continue;
+        if (theme.object.get("name")) |name_val| {
             if (name_val == .string) {
                 try stdout.print("{s}\n", .{name_val.string});
                 count += 1;
@@ -168,16 +171,11 @@ fn parseTheme(obj: std.json.ObjectMap, name: []const u8) Palette {
     return palette;
 }
 
-fn eqlInsensitive(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |ca, cb| {
-        if (toLower(ca) != toLower(cb)) return false;
-    }
-    return true;
-}
-
-fn toLower(ch: u8) u8 {
-    return if (ch >= 'A' and ch <= 'Z') ch + 32 else ch;
+/// The top-level array of theme objects. themes.json can be a user
+/// override, so its shape is checked rather than trusted.
+fn themeList(root: std.json.Value) ![]const std.json.Value {
+    if (root != .array) return error.InvalidThemesFile;
+    return root.array.items;
 }
 
 test "Color.fromHex parses RRGGBB with and without #" {
@@ -218,8 +216,13 @@ test "parseTheme extracts colors and bg/fg from JSON object" {
     try std.testing.expectApproxEqAbs(@as(f32, 16.0 / 255.0), pal.background.r, 0.01);
 }
 
-test "eqlInsensitive matches case-insensitively" {
-    try std.testing.expect(eqlInsensitive("Rose-Pine", "rose-pine"));
-    try std.testing.expect(eqlInsensitive("DRACULA", "dracula"));
-    try std.testing.expect(!eqlInsensitive("rose", "roses"));
+test "themeList rejects a malformed themes file instead of panicking" {
+    const allocator = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"name\": \"x\"}", .{});
+    defer parsed.deinit();
+    try std.testing.expectError(error.InvalidThemesFile, themeList(parsed.value));
+
+    const mixed = try std.json.parseFromSlice(std.json.Value, allocator, "[1, \"a\", {\"name\": \"ok\"}]", .{});
+    defer mixed.deinit();
+    try std.testing.expectEqual(@as(usize, 3), (try themeList(mixed.value)).len);
 }
