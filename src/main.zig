@@ -487,8 +487,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 .retarget => |new_mon| {
                     mon = new_mon;
                     wl.setTarget(mon.outputName());
-                    events.setMonitor(mon.outputName());
-                    events.setOrigin(mon.x, mon.y);
+                    events.retarget(mon.outputName(), mon.x, mon.y);
                     log.info("moving to output '{s}'", .{mon.outputName()});
                 },
             }

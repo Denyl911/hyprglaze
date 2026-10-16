@@ -73,7 +73,8 @@ pub const HyprEvents = struct {
     /// Output this daemon renders on. `hg:mgeo` events for other monitors
     /// are dropped, which is what lets one watcher serve one daemon per
     /// monitor. Length 0 accepts every monitor (tests, and the untargeted
-    /// case).
+    /// case). Guarded by `snapshot_mutex`: the main thread retargets it
+    /// while the reader thread is filtering on it.
     monitor_name: [64]u8 = undefined,
     monitor_name_len: u8 = 0,
 
@@ -87,14 +88,33 @@ pub const HyprEvents = struct {
 
     pub const closed_ring_len = 64;
 
-    pub fn monitorName(self: *const HyprEvents) []const u8 {
-        return self.monitor_name[0..self.monitor_name_len];
+    /// Scope this daemon to one output.
+    pub fn setMonitor(self: *HyprEvents, name: []const u8) void {
+        lockSpin(&self.snapshot_mutex);
+        defer self.snapshot_mutex.unlock();
+        self.setMonitorLocked(name);
     }
 
-    /// Scope this daemon to one output. Must be called before `start`.
-    pub fn setMonitor(self: *HyprEvents, name: []const u8) void {
+    /// Follow another output: its name and layout origin change together,
+    /// so the reader never pairs the new name with the old origin.
+    pub fn retarget(self: *HyprEvents, name: []const u8, x: i32, y: i32) void {
+        lockSpin(&self.snapshot_mutex);
+        defer self.snapshot_mutex.unlock();
+        self.setMonitorLocked(name);
+        self.snapshot.origin_x = x;
+        self.snapshot.origin_y = y;
+    }
+
+    fn setMonitorLocked(self: *HyprEvents, name: []const u8) void {
         self.monitor_name_len = @intCast(@min(name.len, self.monitor_name.len));
         @memcpy(self.monitor_name[0..self.monitor_name_len], name[0..self.monitor_name_len]);
+    }
+
+    /// Whether an event for monitor `name` is ours. Caller holds
+    /// `snapshot_mutex`.
+    fn acceptsLocked(self: *const HyprEvents, name: []const u8) bool {
+        return self.monitor_name_len == 0 or
+            std.mem.eql(u8, name, self.monitor_name[0..self.monitor_name_len]);
     }
 
     /// Layout origin of the monitor this daemon follows, taken under the
@@ -352,8 +372,11 @@ fn handleCustom(self: *HyprEvents, data: []const u8) void {
         // Reject another monitor's event before parsing any records: with
         // one watcher serving every daemon, most traffic is not ours.
         const gi = std.mem.indexOfScalar(u8, payload, group_sep) orelse return;
-        if (self.monitor_name_len != 0 and
-            !std.mem.eql(u8, payload[0..gi], self.monitorName())) return;
+        {
+            lockSpin(&self.snapshot_mutex);
+            defer self.snapshot_mutex.unlock();
+            if (!self.acceptsLocked(payload[0..gi])) return;
+        }
 
         // A short header means we could not read the origin. Dropping the
         // event leaves the previous good snapshot in place; publishing a
@@ -362,7 +385,9 @@ fn handleCustom(self: *HyprEvents, data: []const u8) void {
         // origin.
         const snap = parseGeoM(payload[gi + 1 ..]) orelse return;
         lockSpin(&self.snapshot_mutex);
-        self.snapshot = snap;
+        // Checked again under the same lock as the store: a retarget
+        // between the two would otherwise publish the old monitor's windows.
+        if (self.acceptsLocked(payload[0..gi])) self.snapshot = snap;
         self.snapshot_mutex.unlock();
         _ = self.snapshot_gen.fetchAdd(1, .acq_rel);
         return;
@@ -373,14 +398,15 @@ fn handleCustom(self: *HyprEvents, data: []const u8) void {
         // hyprglaze is running and overwrote ours. Its payload is not scoped
         // to a monitor, so consuming it would silently mix monitors —
         // flag a reinstall instead and let the newer daemon win.
-        if (self.monitor_name_len != 0) {
+        const snap = parseGeo(data["hg:geo:".len..]);
+        lockSpin(&self.snapshot_mutex);
+        const scoped = self.monitor_name_len != 0;
+        if (!scoped) self.snapshot = snap;
+        self.snapshot_mutex.unlock();
+        if (scoped) {
             self.legacy_watcher.store(true, .release);
             return;
         }
-        const snap = parseGeo(data["hg:geo:".len..]);
-        lockSpin(&self.snapshot_mutex);
-        self.snapshot = snap;
-        self.snapshot_mutex.unlock();
         _ = self.snapshot_gen.fetchAdd(1, .acq_rel);
         return;
     }
