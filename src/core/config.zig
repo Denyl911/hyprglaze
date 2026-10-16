@@ -515,3 +515,9 @@ test "expandHome leaves absolute paths alone" {
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("/etc/foo", out);
 }
+
+test "parse empty config uses defaults" {
+    var cfg = try parse(std.testing.allocator, "", "/tmp/test.toml");
+    defer deinit(&cfg, std.testing.allocator);
+    try std.testing.expectEqualStrings("particles", cfg.effect);
+}

@@ -3,8 +3,8 @@
     .version = "0.1.0",
     .dependencies = .{
         .toml = .{
-            .url = "git+https://github.com/sam701/zig-toml#a73c9423d88ed413204b39638fab7e9bccdb83fd",
-            .hash = "toml-0.3.0-bV14Be6EAQDr0fkyURz4jYFyTAMPcwlNN0FEPVjDnXTR",
+            .url = "git+https://github.com/sam701/zig-toml#245f8111f6abd17996d6d0c67c76c0bf38a18a57",
+            .hash = "toml-0.3.0-bV14BfGMAQBKT1Sy9Ry2JrOJvZwgcX0z1Bwn-6cBa2mN",
         },
     },
     .fingerprint = 0xe3d08712c8aa10dc,
