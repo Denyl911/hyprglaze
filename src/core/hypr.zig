@@ -88,36 +88,83 @@ pub const MonitorInfo = struct {
     }
 };
 
-fn parseAddress(val: std.json.Value) u64 {
-    if (val != .string) return 0;
-    const s = val.string;
+/// A window address as Hyprland prints it, hex with or without `0x`
+/// (`j/*` replies carry the prefix, socket2 events do not). 0 for empty or
+/// malformed input, which is also "no window".
+pub fn parseHexAddr(s: []const u8) u64 {
     const hex = if (s.len > 2 and s[0] == '0' and s[1] == 'x') s[2..] else s;
     return std.fmt.parseUnsigned(u64, hex, 16) catch 0;
 }
 
+fn parseAddress(val: std.json.Value) u64 {
+    if (val != .string) return 0;
+    return parseHexAddr(val.string);
+}
+
+/// One of this Hyprland instance's sockets:
+/// `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/<name>`.
+pub const SocketPath = struct {
+    /// sockaddr_un.sun_path, NUL terminator included.
+    const sun_path_len = @typeInfo(std.meta.fieldInfo(std.posix.sockaddr.un, .path).type).array.len;
+
+    buf: [sun_path_len]u8 = undefined,
+    len: usize = 0,
+
+    pub fn init(name: []const u8) !SocketPath {
+        const xdg = std.c.getenv("XDG_RUNTIME_DIR") orelse return error.NoXdgRuntime;
+        const sig = std.c.getenv("HYPRLAND_INSTANCE_SIGNATURE") orelse return error.NoHyprlandInstance;
+        return format(std.mem.span(xdg), std.mem.span(sig), name);
+    }
+
+    /// Rejects a path that does not fit sockaddr_un up front, rather than
+    /// panicking on the copy at connect time.
+    fn format(xdg: []const u8, sig: []const u8, name: []const u8) !SocketPath {
+        var self = SocketPath{};
+        // One byte short of the buffer: the path must stay NUL-terminated.
+        const path = std.fmt.bufPrint(self.buf[0 .. sun_path_len - 1], "{s}/hypr/{s}/{s}", .{ xdg, sig, name }) catch
+            return error.PathTooLong;
+        self.len = path.len;
+        return self;
+    }
+
+    pub fn slice(self: *const SocketPath) []const u8 {
+        return self.buf[0..self.len];
+    }
+
+    /// Open a connected stream socket; the caller closes it. `timeout_us`
+    /// bounds send and receive (connect included) when set.
+    pub fn connect(self: *const SocketPath, timeout_us: ?u32) !i32 {
+        var addr: std.posix.sockaddr.un = .{ .path = undefined };
+        @memset(&addr.path, 0);
+        @memcpy(addr.path[0..self.len], self.slice());
+
+        const fd = libc.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
+        if (fd < 0) return error.SocketCreateFailed;
+        errdefer _ = libc.close(fd);
+        if (timeout_us) |us| {
+            const tv = std.posix.timeval{ .sec = 0, .usec = @intCast(us) };
+            _ = std.c.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &tv, @sizeOf(std.posix.timeval));
+            _ = std.c.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &tv, @sizeOf(std.posix.timeval));
+        }
+        if (libc.connect(fd, @ptrCast(&addr), @sizeOf(std.posix.sockaddr.un)) < 0)
+            return error.SocketConnectFailed;
+        return fd;
+    }
+};
+
+/// Hyprland's animation config as `j/animations` reports it, both halves
+/// the daemon mirrors. A half is null when the reply lacks the node it is
+/// read from.
+pub const Animations = struct {
+    workspace: ?WorkspaceAnim,
+    window: ?window_anim.Anim,
+};
+
 pub const HyprIpc = struct {
-    socket_path: [256]u8,
-    socket_path_len: usize,
+    socket: SocketPath,
 
     pub fn init() !HyprIpc {
-        const xdg_runtime_z = std.c.getenv("XDG_RUNTIME_DIR") orelse return error.NoXdgRuntime;
-        const xdg_runtime = std.mem.span(xdg_runtime_z);
-        const instance_sig_z = std.c.getenv("HYPRLAND_INSTANCE_SIGNATURE") orelse return error.NoHyprlandInstance;
-        const instance_sig = std.mem.span(instance_sig_z);
-
-        var path_buf: [256]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "{s}/hypr/{s}/.socket.sock", .{ xdg_runtime, instance_sig }) catch return error.PathTooLong;
-        // sockaddr.un.path is 108 bytes on Linux (NUL-terminated); reject
-        // here instead of panicking on the memcpy at connect time.
-        if (path.len >= @typeInfo(std.meta.fieldInfo(std.posix.sockaddr.un, .path).type).array.len)
-            return error.PathTooLong;
-
-        var result = HyprIpc{
-            .socket_path = undefined,
-            .socket_path_len = path.len,
-        };
-        @memcpy(result.socket_path[0..path.len], path);
-        return result;
+        return .{ .socket = try SocketPath.init(".socket.sock") };
     }
 
     fn query(self: *const HyprIpc, command: []const u8, buf: []u8) ![]const u8 {
@@ -127,23 +174,8 @@ pub const HyprIpc = struct {
     /// `query` with an optional send/receive timeout (microseconds), for
     /// per-frame calls that must never stall the render loop.
     fn queryTimeout(self: *const HyprIpc, command: []const u8, buf: []u8, timeout_us: ?u32) ![]const u8 {
-        var addr: std.posix.sockaddr.un = .{ .path = undefined };
-        @memset(&addr.path, 0);
-        @memcpy(addr.path[0..self.socket_path_len], self.socket_path[0..self.socket_path_len]);
-
-        const sock_rc = libc.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
-        if (sock_rc < 0) return error.SocketCreateFailed;
-        const sock: i32 = sock_rc;
+        const sock = try self.socket.connect(timeout_us);
         defer _ = libc.close(sock);
-        if (timeout_us) |us| {
-            const tv = std.posix.timeval{ .sec = 0, .usec = @intCast(us) };
-            _ = std.c.setsockopt(sock, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &tv, @sizeOf(std.posix.timeval));
-            _ = std.c.setsockopt(sock, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &tv, @sizeOf(std.posix.timeval));
-        }
-
-        if (libc.connect(sock, @ptrCast(&addr), @sizeOf(std.posix.sockaddr.un)) < 0) {
-            return error.SocketConnectFailed;
-        }
         // Stream sockets may write short, especially for multi-KiB eval
         // commands; loop until the full command is on the wire.
         var written: usize = 0;
@@ -204,75 +236,27 @@ pub const HyprIpc = struct {
         }
     }
 
-    pub fn activeWindow(self: *const HyprIpc, allocator: std.mem.Allocator) !?WindowGeometry {
+    /// Address of the focused window, 0 when nothing is focused. Only for
+    /// bootstrapping: from then on `activewindowv2` events carry it.
+    pub fn activeAddress(self: *const HyprIpc, allocator: std.mem.Allocator) !u64 {
         var buf: [4096]u8 = undefined;
         const response = try self.query("j/activewindow", &buf);
-        if (response.len == 0) return null;
-
-        const parsed = std.json.parseFromSlice(std.json.Value, allocator, response, .{}) catch return null;
-        defer parsed.deinit();
-
-        // Never trust reply shape: an error string, empty object, or a
-        // truncated reply (fixed 4KiB buffer) must yield null, not a
-        // union-tag panic.
-        if (parsed.value != .object) return null;
-        const root = parsed.value.object;
-        const at = jsonIntPair(root.get("at")) orelse return null;
-        const size = jsonIntPair(root.get("size")) orelse return null;
-
-        var result = WindowGeometry{
-            .x = at[0],
-            .y = at[1],
-            .w = size[0],
-            .h = size[1],
-        };
-
-        if (root.get("address")) |addr_val| result.address = parseAddress(addr_val);
-
-        if (root.get("class")) |class_val| {
-            if (class_val == .string) {
-                const class = class_val.string;
-                const len: u8 = @intCast(@min(class.len, 128));
-                @memcpy(result.class[0..len], class[0..len]);
-                result.class_len = len;
-            }
-        }
-
-        if (root.get("title")) |title_val| {
-            if (title_val == .string) {
-                const title = title_val.string;
-                const len: u8 = @intCast(@min(title.len, 128));
-                @memcpy(result.title[0..len], title[0..len]);
-                result.title_len = len;
-            }
-        }
-
-        return result;
+        return parseActiveAddress(allocator, response);
     }
 
-    /// Detect the workspace animation Hyprland is configured with, so the
-    /// slide transition can mirror its direction, duration, and easing.
-    /// Spring curves are detected by name only — their parameters are not
-    /// exposed over IPC, so hyprutils' defaults are used unless the config
-    /// overrides them (`[transition] workspace_spring`).
-    pub fn workspaceAnim(self: *const HyprIpc, allocator: std.mem.Allocator) !WorkspaceAnim {
+    /// The workspace and window animations Hyprland is configured with, so
+    /// workspace slides and window moves can mirror the compositor's own
+    /// (direction, duration, easing). One `j/animations` query covers both.
+    pub fn animations(self: *const HyprIpc, allocator: std.mem.Allocator) !Animations {
         var buf: [16384]u8 = undefined;
         const response = try self.query("j/animations", &buf);
-        return parseWorkspaceAnim(allocator, response);
-    }
-
-    /// Hyprland's effective window move/resize animation, mirrored by
-    /// window_anim.zig because the reported geometry is the goal.
-    pub fn windowAnim(self: *const HyprIpc, allocator: std.mem.Allocator) !window_anim.Anim {
-        var buf: [16384]u8 = undefined;
-        const response = try self.query("j/animations", &buf);
-        return parseWindowAnim(allocator, response);
+        return parseAnimations(allocator, response);
     }
 
     /// The monitor to render on. `want` names an output exactly; when it is
     /// null the focused monitor is chosen, falling back to the first enabled
-    /// one. Split from `parseMonitor` the same way `workspaceAnim` is split
-    /// from `parseWorkspaceAnim`, so the selection rules are unit-testable
+    /// one. Split from `parseMonitor` the same way `animations` is split
+    /// from `parseAnimations`, so the selection rules are unit-testable
     /// without a live compositor.
     pub fn monitor(self: *const HyprIpc, allocator: std.mem.Allocator, want: ?[]const u8) !MonitorInfo {
         // `j/monitors` runs ~1.8KiB per monitor — `availableModes` alone is
@@ -396,9 +380,20 @@ fn jsonIntField(s: []const u8, key: []const u8) ?i32 {
 /// configured curve can't be resolved from the reply.
 const default_bezier = [4]f32{ 0.0, 0.75, 0.15, 1.0 };
 
+/// `j/activewindow` → the focused window's address. An error string, an
+/// empty object (nothing focused) or a truncated reply all mean 0.
+fn parseActiveAddress(allocator: std.mem.Allocator, response: []const u8) u64 {
+    if (response.len == 0) return 0;
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, response, .{}) catch return 0;
+    defer parsed.deinit();
+    if (parsed.value != .object) return 0;
+    return parseAddress(parsed.value.object.get("address") orelse return 0);
+}
+
 /// Parse a `j/animations` reply: `[[{name,overridden,bezier,enabled,
-/// speed,style}, ...], [{name,X0,Y0,X1,Y1}, ...]]`.
-fn parseWorkspaceAnim(allocator: std.mem.Allocator, response: []const u8) !WorkspaceAnim {
+/// speed,style}, ...], [{name,X0,Y0,X1,Y1}, ...]]`. The reply as a whole
+/// must have that shape; each half is null when its node is missing.
+fn parseAnimations(allocator: std.mem.Allocator, response: []const u8) !Animations {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, response, .{}) catch
         return error.BadAnimationsReply;
     defer parsed.deinit();
@@ -407,9 +402,27 @@ fn parseWorkspaceAnim(allocator: std.mem.Allocator, response: []const u8) !Works
     const anims_v = parsed.value.array.items[0];
     const beziers_v = parsed.value.array.items[1];
     if (anims_v != .array or beziers_v != .array) return error.BadAnimationsReply;
-    const anims = anims_v.array.items;
+    return .{
+        .workspace = workspaceAnimFrom(anims_v.array.items, beziers_v.array.items),
+        .window = windowAnimFrom(anims_v.array.items, beziers_v.array.items),
+    };
+}
 
-    const ws = findAnim(anims, "workspaces") orelse return error.BadAnimationsReply;
+/// The workspace half of `parseAnimations`, as an error when missing.
+fn parseWorkspaceAnim(allocator: std.mem.Allocator, response: []const u8) !WorkspaceAnim {
+    return (try parseAnimations(allocator, response)).workspace orelse error.BadAnimationsReply;
+}
+
+/// The window half of `parseAnimations`, as an error when missing.
+fn parseWindowAnim(allocator: std.mem.Allocator, response: []const u8) !window_anim.Anim {
+    return (try parseAnimations(allocator, response)).window orelse error.BadAnimationsReply;
+}
+
+/// Spring curves are detected by name only — their parameters are not
+/// exposed over IPC, so hyprutils' defaults are used unless the config
+/// overrides them (`[transition] workspace_spring`).
+fn workspaceAnimFrom(anims: []const std.json.Value, beziers: []const std.json.Value) ?WorkspaceAnim {
+    const ws = findAnim(anims, "workspaces") orelse return null;
     // A non-overridden node reports zeroed speed/bezier; its effective
     // values are inherited from the tree root ("global").
     const effective = if (jsonBool(ws.get("overridden")))
@@ -437,26 +450,17 @@ fn parseWorkspaceAnim(allocator: std.mem.Allocator, response: []const u8) !Works
     const ease: workspace_slide.Ease = if (std.mem.startsWith(u8, bezier_name, "spring:"))
         .{ .spring = .{} }
     else
-        .{ .cubic_bezier = findBezier(beziers_v.array.items, bezier_name) orelse
-            findBezier(beziers_v.array.items, "default") orelse default_bezier };
+        .{ .cubic_bezier = findBezier(beziers, bezier_name) orelse
+            findBezier(beziers, "default") orelse default_bezier };
 
     return .{ .axis = axis, .duration = duration, .ease = ease };
 }
 
-/// Parse the `windowsMove` leaf out of a `j/animations` reply. Leaves that
-/// are not overridden report zeroed values and inherit from their parent:
-/// windowsMove -> windows -> global.
-fn parseWindowAnim(allocator: std.mem.Allocator, response: []const u8) !window_anim.Anim {
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, response, .{}) catch
-        return error.BadAnimationsReply;
-    defer parsed.deinit();
-
-    if (parsed.value != .array or parsed.value.array.items.len < 2) return error.BadAnimationsReply;
-    const anims_v = parsed.value.array.items[0];
-    const beziers_v = parsed.value.array.items[1];
-    if (anims_v != .array or beziers_v != .array) return error.BadAnimationsReply;
-    const anims = anims_v.array.items;
-
+/// The `windowsMove` leaf, which window_anim.zig mirrors because the
+/// reported geometry is the goal. Leaves that are not overridden report
+/// zeroed values and inherit from their parent: windowsMove -> windows ->
+/// global.
+fn windowAnimFrom(anims: []const std.json.Value, beziers: []const std.json.Value) ?window_anim.Anim {
     var effective: ?std.json.ObjectMap = null;
     for ([_][]const u8{ "windowsMove", "windows", "global" }) |name| {
         const node = findAnim(anims, name) orelse continue;
@@ -465,7 +469,7 @@ fn parseWindowAnim(allocator: std.mem.Allocator, response: []const u8) !window_a
             break;
         }
     }
-    const eff = effective orelse return error.BadAnimationsReply;
+    const eff = effective orelse return null;
 
     const speed = jsonF32(eff.get("speed")) orelse 0;
     const bezier_name = jsonString(eff.get("bezier")) orelse "";
@@ -475,8 +479,8 @@ fn parseWindowAnim(allocator: std.mem.Allocator, response: []const u8) !window_a
         .ease = if (std.mem.startsWith(u8, bezier_name, "spring:"))
             .{ .spring = .{} }
         else
-            .{ .cubic_bezier = findBezier(beziers_v.array.items, bezier_name) orelse
-                findBezier(beziers_v.array.items, "default") orelse default_bezier },
+            .{ .cubic_bezier = findBezier(beziers, bezier_name) orelse
+                findBezier(beziers, "default") orelse default_bezier },
     };
 }
 
@@ -535,6 +539,49 @@ test "parseAddress handles prefixed, bare, and malformed input" {
     try std.testing.expectEqual(@as(u64, 0xabc), parseAddress(.{ .string = "abc" }));
     try std.testing.expectEqual(@as(u64, 0), parseAddress(.{ .string = "not-hex" }));
     try std.testing.expectEqual(@as(u64, 0), parseAddress(.{ .integer = 42 }));
+}
+
+test "parseHexAddr takes socket2's bare hex and j/'s prefixed hex" {
+    try std.testing.expectEqual(@as(u64, 0x64cea2525760), parseHexAddr("64cea2525760"));
+    try std.testing.expectEqual(@as(u64, 0x64cea2525760), parseHexAddr("0x64cea2525760"));
+    try std.testing.expectEqual(@as(u64, 0), parseHexAddr(""));
+    try std.testing.expectEqual(@as(u64, 0), parseHexAddr("0x"));
+}
+
+test "parseActiveAddress reads the address, 0 for no focus or junk" {
+    const a = std.testing.allocator;
+    try std.testing.expectEqual(@as(u64, 0x55d0), parseActiveAddress(a, "{\"address\": \"0x55d0\", \"at\": [1, 2]}"));
+    try std.testing.expectEqual(@as(u64, 0), parseActiveAddress(a, "{}"));
+    try std.testing.expectEqual(@as(u64, 0), parseActiveAddress(a, ""));
+    try std.testing.expectEqual(@as(u64, 0), parseActiveAddress(a, "{\"address\": \"0x55"));
+}
+
+test "parseAnimations reads both halves from one reply" {
+    const reply =
+        \\[[{"name":"global","overridden":true,"bezier":"default","enabled":true,"speed":10.0,"style":""},
+        \\  {"name":"workspaces","overridden":true,"bezier":"easeOutQuint","enabled":true,"speed":6.0,"style":"slidevert"},
+        \\  {"name":"windows","overridden":true,"bezier":"spring:springy","enabled":true,"speed":4.79,"style":""}],
+        \\ [{"name":"default","X0":0.0,"Y0":0.75,"X1":0.15,"Y1":1.0},
+        \\  {"name":"easeOutQuint","X0":0.23,"Y0":1.0,"X1":0.32,"Y1":1.0}]]
+    ;
+    const anims = try parseAnimations(std.testing.allocator, reply);
+    try std.testing.expectEqual(workspace_slide.Axis.vertical, anims.workspace.?.axis);
+    try std.testing.expect(anims.window.?.ease == .spring);
+
+    // A reply without a workspaces node still yields the window half.
+    const no_ws =
+        \\[[{"name":"global","overridden":true,"bezier":"default","enabled":true,"speed":10.0,"style":""}],[]]
+    ;
+    const partial = try parseAnimations(std.testing.allocator, no_ws);
+    try std.testing.expect(partial.workspace == null);
+    try std.testing.expect(partial.window != null);
+}
+
+test "SocketPath builds the instance path and rejects one too long for sockaddr_un" {
+    const p = try SocketPath.format("/run/user/1000", "abc_123", ".socket2.sock");
+    try std.testing.expectEqualStrings("/run/user/1000/hypr/abc_123/.socket2.sock", p.slice());
+    const long = "x" ** 100;
+    try std.testing.expectError(error.PathTooLong, SocketPath.format("/run/user/1000", long, ".socket.sock"));
 }
 
 test "jsonInt rejects wrong tags and overflow" {
@@ -736,11 +783,3 @@ test "parseMonitor truncates an over-long name instead of failing" {
     try std.testing.expectEqualStrings(long[0..64], mon.outputName());
 }
 
-fn jsonIntPair(val: ?std.json.Value) ?[2]i32 {
-    const v = val orelse return null;
-    if (v != .array or v.array.items.len < 2) return null;
-    return .{
-        jsonInt(v.array.items[0]) orelse return null,
-        jsonInt(v.array.items[1]) orelse return null,
-    };
-}

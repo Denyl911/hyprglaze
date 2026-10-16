@@ -22,8 +22,7 @@ const log = std.log.scoped(.hypr_events);
 /// A bare `hg:geo` (and `hg:hb`) comes from an older, pre-per-monitor
 /// watcher; see `legacy_watcher`.
 pub const HyprEvents = struct {
-    socket_path: [256]u8,
-    socket_path_len: usize,
+    socket: hypr.SocketPath,
 
     thread: ?std.Thread = null,
     running: std.atomic.Value(bool) = .init(false),
@@ -131,22 +130,7 @@ pub const HyprEvents = struct {
     }
 
     pub fn init() !HyprEvents {
-        const xdg_z = std.c.getenv("XDG_RUNTIME_DIR") orelse return error.NoXdgRuntime;
-        const xdg = std.mem.span(xdg_z);
-        const sig_z = std.c.getenv("HYPRLAND_INSTANCE_SIGNATURE") orelse return error.NoHyprlandInstance;
-        const sig = std.mem.span(sig_z);
-
-        var self = HyprEvents{
-            .socket_path = undefined,
-            .socket_path_len = 0,
-        };
-        const path = std.fmt.bufPrint(&self.socket_path, "{s}/hypr/{s}/.socket2.sock", .{ xdg, sig }) catch return error.PathTooLong;
-        // sockaddr.un.path is 108 bytes on Linux; reject here rather than
-        // panicking on the memcpy in connectSocket.
-        if (path.len >= @typeInfo(std.meta.fieldInfo(posix.sockaddr.un, .path).type).array.len)
-            return error.PathTooLong;
-        self.socket_path_len = path.len;
-        return self;
+        return .{ .socket = try hypr.SocketPath.init(".socket2.sock") };
     }
 
     pub fn start(self: *HyprEvents) !void {
@@ -242,7 +226,7 @@ fn readerLoop(self: *HyprEvents) void {
     var line_len: usize = 0;
 
     while (self.running.load(.acquire)) {
-        const fd = connectSocket(self) catch |err| {
+        const fd = self.socket.connect(null) catch |err| {
             log.warn("socket2 connect failed: {} — retrying in 1s", .{err});
             iohelp.sleepNs(std.time.ns_per_s);
             continue;
@@ -293,19 +277,6 @@ fn readSocket(
             // parse are hg:mgeo, whose worst case fits the buffer.
         }
     }
-}
-
-fn connectSocket(self: *HyprEvents) !i32 {
-    var addr: posix.sockaddr.un = .{ .path = undefined };
-    @memset(&addr.path, 0);
-    @memcpy(addr.path[0..self.socket_path_len], self.socket_path[0..self.socket_path_len]);
-
-    const fd_rc = libc.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-    if (fd_rc < 0) return error.SocketCreateFailed;
-    const fd: i32 = fd_rc;
-    errdefer _ = libc.close(fd);
-    if (libc.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) < 0) return error.SocketConnectFailed;
-    return fd;
 }
 
 fn handleLine(self: *HyprEvents, line: []const u8) void {
@@ -543,21 +514,14 @@ pub fn nowMs() i64 {
     return @intCast(iohelp.nowNs() / std.time.ns_per_ms);
 }
 
-fn parseHexAddr(s: []const u8) u64 {
-    if (s.len == 0) return 0;
-    const hex = if (s.len > 2 and s[0] == '0' and s[1] == 'x') s[2..] else s;
-    return std.fmt.parseUnsigned(u64, hex, 16) catch 0;
-}
+const parseHexAddr = hypr.parseHexAddr;
 
 // Tests cover the line parser only. Threading and socket connection
 // require a live Hyprland instance and are exercised manually
 // (`zig build ipc-test`).
 
 fn testEvents() HyprEvents {
-    return .{
-        .socket_path = undefined,
-        .socket_path_len = 0,
-    };
+    return .{ .socket = .{} };
 }
 
 test "handleLine activewindowv2 sets focus address" {

@@ -123,19 +123,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
         mon.outputName(), mon.width, mon.height, mon.x, mon.y, mon.scale,
     });
 
-    // Detect Hyprland's workspace animation so switches mirror the
-    // compositor's own slide (direction, duration, easing). Refreshed on
-    // Hyprland config reloads; config overrides applied on top.
-    var detected_anim: ?hypr.WorkspaceAnim = ipc.workspaceAnim(allocator) catch |err| blk: {
-        log.warn("workspace animation detection failed: {} — using defaults", .{err});
-        break :blk null;
-    };
-    // Likewise the window move animation: the watcher reports goal rects,
-    // and the daemon replays the compositor's curve toward them.
-    var detected_win_anim: ?window_anim.Anim = ipc.windowAnim(allocator) catch |err| blk: {
-        log.warn("window animation detection failed: {} — using defaults", .{err});
-        break :blk null;
-    };
+    // Detect Hyprland's animations: workspace switches mirror the
+    // compositor's own slide (direction, duration, easing), and since the
+    // watcher reports window goal rects, the daemon replays the
+    // compositor's move curve toward them. Refreshed on Hyprland config
+    // reloads; config overrides applied on top.
+    var detected = detectAnimations(&ipc, allocator, .{ .workspace = null, .window = null });
 
     // Subscribe to Hyprland's event stream so focus / lifecycle / workspace
     // changes are instant rather than detected via the every-100ms poll.
@@ -189,13 +182,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // Workspace slide state + the outgoing window set captured at each
     // workspace switch (slides off-screen while the new set slides in).
     var slide = workspace_slide.WorkspaceSlide{};
-    configureSlide(&slide, detected_anim, &cfg);
+    configureSlide(&slide, detected.workspace, &cfg);
     var win_anims = window_anim.Tracker{};
     // Recent frame period. A frame drawn now reaches the screen on the
     // compositor's next refresh, so window animations are sampled that far
     // ahead to line up with the window as it will be displayed.
     var frame_period: f64 = 1.0 / 60.0;
-    configureWindowAnim(&win_anims, detected_win_anim, &cfg);
+    configureWindowAnim(&win_anims, detected.window, &cfg);
     switch (slide.ease) {
         .spring => |sp| log.info("workspace slide: {s}, spring k={d:.1} c={d:.1} m={d:.1}", .{
             @tagName(slide.axis), sp.stiffness, sp.damping, sp.mass,
@@ -237,8 +230,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // because the event stream only carries future changes, never the
     // current state. From here on, `activewindowv2` events keep
     // `events.focused_address` in sync.
-    const initial_focus = ipc.activeWindow(allocator) catch null;
-    const initial_addr: u64 = if (initial_focus) |w| w.address else 0;
+    const initial_addr: u64 = ipc.activeAddress(allocator) catch 0;
     events.focused_address.store(initial_addr, .release);
 
     // Scope the event stream to our output before the reader exists: the
@@ -457,8 +449,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 reloadConfig(allocator, &cfg, &r, &trans, mon.outputName()) catch |err| {
                     log.warn("reload failed: {}", .{err});
                 };
-                configureSlide(&slide, detected_anim, &cfg);
-                configureWindowAnim(&win_anims, detected_win_anim, &cfg);
+                configureSlide(&slide, detected.workspace, &cfg);
+                configureWindowAnim(&win_anims, detected.window, &cfg);
             }
         }
 
@@ -516,11 +508,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     log.warn("watcher reinstall failed: {} — retrying in {d}s", .{ err, @as(u32, @intFromFloat(reinstall_min_gap)) });
                 };
                 if (dirty.config) {
-                    // The reload may have changed the workspace animation.
-                    detected_anim = ipc.workspaceAnim(allocator) catch detected_anim;
-                    configureSlide(&slide, detected_anim, &cfg);
-                    detected_win_anim = ipc.windowAnim(allocator) catch detected_win_anim;
-                    configureWindowAnim(&win_anims, detected_win_anim, &cfg);
+                    // The reload may have changed the animations.
+                    detected = detectAnimations(&ipc, allocator, detected);
+                    configureSlide(&slide, detected.workspace, &cfg);
+                    configureWindowAnim(&win_anims, detected.window, &cfg);
                 }
             }
 
@@ -827,6 +818,21 @@ fn cacheWindows(
             .h = raw.windows[i].h,
         };
     }
+}
+
+/// Query Hyprland's animations. Whatever cannot be detected keeps its
+/// `prev` value: the last detection, or null (the defaults) at startup.
+fn detectAnimations(ipc: *const hypr.HyprIpc, allocator: std.mem.Allocator, prev: hypr.Animations) hypr.Animations {
+    const got = ipc.animations(allocator) catch |err| {
+        log.warn("animation detection failed: {} — keeping the previous settings", .{err});
+        return prev;
+    };
+    if (got.workspace == null) log.warn("no workspace animation in Hyprland's reply — keeping the previous one", .{});
+    if (got.window == null) log.warn("no window animation in Hyprland's reply — keeping the previous one", .{});
+    return .{
+        .workspace = got.workspace orelse prev.workspace,
+        .window = got.window orelse prev.window,
+    };
 }
 
 /// Resolve the effective slide behavior: what Hyprland's animation
