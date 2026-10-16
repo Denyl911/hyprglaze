@@ -1,7 +1,6 @@
 const std = @import("std");
 const iohelp = @import("../../core/io_helper.zig");
 const shader_mod = @import("../../core/shader.zig");
-const texture_mod = @import("../../core/texture.zig");
 const config_mod = @import("../../core/config.zig");
 const effects = @import("../../effects.zig");
 const sprite = @import("sprite.zig");
@@ -34,10 +33,7 @@ pub const Context = struct {
     scale: f32 = 2.0,
 
     // Animation
-    anim: Anim = IDLE,
-    frame: u8 = 0,
-    frame_timer: f32 = 0,
-    anim_done: bool = false,
+    play: sprite.Player = .{},
     facing_right: bool = true,
 
     // Movement speeds synced to animation
@@ -63,14 +59,10 @@ pub const Context = struct {
     rng: std.Random.DefaultPrng,
 
     // Texture
-    sprite_tex: ?texture_mod.Texture = null,
+    sheet: sprite.Sheet,
 
     pub fn init(_: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) Context {
         const sprite_path = params.getString("sprite", "sprites/buddy.png") orelse "sprites/buddy.png";
-        const tex = texture_mod.Texture.loadFromFile(sprite_path) catch |err| blk: {
-            log.warn("sprite load failed: {s} ({}) - buddy renders without a texture", .{ sprite_path, err });
-            break :blk null;
-        };
 
         const scale: f32 = params.getFloat("scale", 2.0);
         const walk_spd = (32.0 * scale) / (6.0 / 8.0);
@@ -81,7 +73,8 @@ pub const Context = struct {
             .y = height - 50,
             .screen_w = width,
             .screen_h = height,
-            .sprite_tex = tex,
+            .scale = scale,
+            .sheet = sprite.Sheet.init(sprite_path),
             .rng = std.Random.DefaultPrng.init(iohelp.nowNs()),
             .walk_speed = walk_spd,
             .run_speed = run_spd,
@@ -114,8 +107,8 @@ pub const Context = struct {
                 self.behavior = .trip;
                 self.behavior_timer = 0;
                 self.behavior_duration = 0.8;
-                self.anim_done = false;
-                self.frame = 0;
+                self.play.done = false;
+                self.play.frame = 0;
             } else if (self.cursor_speed > 800 and cursor_dist < 80) {
                 self.behavior = .flee;
                 self.wander_dir = if (cursor_dx_to_buddy > 0) -1.0 else 1.0;
@@ -141,7 +134,7 @@ pub const Context = struct {
         if (self.behavior == .wave or self.behavior == .throw_rock or
             self.behavior == .trip or self.behavior == .dramatic_death)
         {
-            pick_new = pick_new or self.anim_done;
+            pick_new = pick_new or self.play.done;
         }
 
         if (pick_new) {
@@ -155,7 +148,7 @@ pub const Context = struct {
             .idle => {
                 self.vx *= 0.9;
                 self.idle_time += dt;
-                self.setAnim(IDLE);
+                self.play.set(IDLE);
             },
             .wander => {
                 if (self.grounded) {
@@ -163,7 +156,7 @@ pub const Context = struct {
                     self.vx += (target_vx - self.vx) * 5.0 * dt;
                 }
                 self.facing_right = self.wander_dir > 0;
-                self.setAnim(WALK);
+                self.play.set(WALK);
                 if (self.x < 50 or self.x > self.screen_w - 50) {
                     self.wander_dir = -self.wander_dir;
                 }
@@ -178,7 +171,7 @@ pub const Context = struct {
                     const use_run = @abs(dx) > 200;
                     const target_vx = dir * (if (use_run) self.run_speed else self.walk_speed);
                     self.vx += (target_vx - self.vx) * 5.0 * dt;
-                    self.setAnim(if (use_run) RUN else WALK);
+                    self.play.set(if (use_run) RUN else WALK);
 
                     const target_y = fw.y + fw.h;
                     if (target_y - self.y > 30 and self.jump_cooldown <= 0) {
@@ -205,8 +198,8 @@ pub const Context = struct {
                     self.vx += std.math.clamp(dx * 0.5, -150, 150);
                 }
                 if (!self.grounded) {
-                    self.setAnim(JUMP);
-                    self.setJumpFrame();
+                    self.play.set(JUMP);
+                    self.play.setJumpFrame(self.vy);
                 } else {
                     self.behavior = .idle;
                     self.behavior_duration = 0.5;
@@ -216,10 +209,10 @@ pub const Context = struct {
             .wave, .celebrate => {
                 self.vx *= 0.9;
                 self.facing_right = state.cursor[0] > self.x;
-                self.setAnim(if (self.behavior == .celebrate) ATTACK2 else ATTACK1);
+                self.play.set(if (self.behavior == .celebrate) ATTACK2 else ATTACK1);
             },
             .push => {
-                self.setAnim(PUSH);
+                self.play.set(PUSH);
                 if (has_target) {
                     const edge_left = fw.x;
                     const edge_right = fw.x + fw.w;
@@ -237,16 +230,16 @@ pub const Context = struct {
             .throw_rock => {
                 self.vx *= 0.9;
                 self.facing_right = state.cursor[0] > self.x;
-                self.setAnim(THROW);
+                self.play.set(THROW);
             },
             .trip => {
                 self.vx *= 0.95;
-                self.setAnim(HURT);
+                self.play.set(HURT);
             },
             .dramatic_death => {
                 self.vx *= 0.95;
-                self.setAnim(DEATH);
-                if (self.anim_done) {
+                self.play.set(DEATH);
+                if (self.play.done) {
                     self.x = self.screen_w * 0.5;
                     self.y = self.screen_h;
                     self.vx = 0;
@@ -257,7 +250,7 @@ pub const Context = struct {
                 }
             },
             .climb => {
-                self.setAnim(CLIMB);
+                self.play.set(CLIMB);
                 if (self.grounded) {
                     self.vy = 60.0;
                     self.grounded = false;
@@ -270,17 +263,17 @@ pub const Context = struct {
                 if (@abs(cdx) > 40) {
                     const dir: f32 = if (cdx > 0) 1.0 else -1.0;
                     self.vx += (dir * self.walk_speed - self.vx) * 5.0 * dt;
-                    self.setAnim(WALK);
+                    self.play.set(WALK);
                 } else {
                     self.vx *= 0.85;
-                    self.setAnim(ATTACK1);
+                    self.play.set(ATTACK1);
                 }
             },
             .flee => {
                 self.facing_right = self.wander_dir > 0;
                 const target_vx = self.wander_dir * self.run_speed;
                 self.vx += (target_vx - self.vx) * 8.0 * dt;
-                self.setAnim(RUN);
+                self.play.set(RUN);
             },
         }
 
@@ -318,14 +311,14 @@ pub const Context = struct {
         if (self.y > self.screen_h) { self.y = self.screen_h; self.vy = 0; }
 
         // --- Animate ---
-        self.advanceFrame(dt);
+        self.play.advance(dt, !self.grounded);
     }
 
     fn pickBehavior(self: *Context, rand: std.Random, has_target: bool, cursor_dist: f32) void {
         self.behavior_timer = 0;
-        self.anim_done = false;
-        self.frame = 0;
-        self.frame_timer = 0;
+        self.play.done = false;
+        self.play.frame = 0;
+        self.play.timer = 0;
 
         const roll = rand.float(f32);
 
@@ -375,64 +368,16 @@ pub const Context = struct {
         }
     }
 
-    fn setAnim(self: *Context, anim: Anim) void {
-        if (self.anim.row != anim.row) {
-            self.anim = anim;
-            self.frame = 0;
-            self.frame_timer = 0;
-            self.anim_done = false;
-        }
-    }
 
-    fn setJumpFrame(self: *Context) void {
-        if (self.vy > 100) { self.frame = 0; }
-        else if (self.vy > 50) { self.frame = 1; }
-        else if (self.vy > 0) { self.frame = 2; }
-        else if (self.vy > -30) { self.frame = 3; }
-        else if (self.vy > -80) { self.frame = 4; }
-        else if (self.vy > -150) { self.frame = 5; }
-        else { self.frame = 6; }
-    }
 
-    fn advanceFrame(self: *Context, dt: f32) void {
-        if (self.anim.row == JUMP.row and !self.grounded) return;
-        self.frame_timer += dt * self.anim.fps;
-        if (self.frame_timer >= 1.0) {
-            self.frame_timer -= 1.0;
-            if (self.frame + 1 >= self.anim.frames) {
-                if (self.anim.looping) { self.frame = 0; } else { self.anim_done = true; }
-            } else {
-                self.frame += 1;
-            }
-        }
-    }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        if (self.sprite_tex) |*tex| {
-            tex.bind(0);
-            c.glUseProgram(prog.program);
-            const loc = c.glGetUniformLocation(prog.program, "iSprite");
-            if (loc >= 0) c.glUniform1i(loc, 0);
-        }
-
-        c.glUseProgram(prog.program);
-        const facing: f32 = if (self.facing_right) 1.0 else -1.0;
-        const col_f: f32 = @floatFromInt(self.frame);
-        const row_f: f32 = @floatFromInt(self.anim.row);
-
-        if (prog.i_particles[0] >= 0)
-            c.glUniform4f(prog.i_particles[0], self.x, self.y, self.scale, facing);
-        if (prog.i_particles[1] >= 0)
-            c.glUniform4f(prog.i_particles[1],
-                col_f * sprite.CELL / sprite.SHEET_W,
-                row_f * sprite.CELL / sprite.SHEET_H,
-                (col_f + 1.0) * sprite.CELL / sprite.SHEET_W,
-                (row_f + 1.0) * sprite.CELL / sprite.SHEET_H);
+        sprite.upload(prog, &self.sheet, &self.play, self.x, self.y, self.scale, self.facing_right);
         if (prog.i_particle_count >= 0)
             c.glUniform1i(prog.i_particle_count, 2);
     }
 
     pub fn deinit(self: *Context) void {
-        if (self.sprite_tex) |*tex| tex.deinit();
+        self.sheet.deinit();
     }
 };

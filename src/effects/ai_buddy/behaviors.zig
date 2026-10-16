@@ -31,7 +31,7 @@ pub fn execute(ctx: *context_mod.Context, state: effects.FrameState, dt: f32) vo
 
     // Wall climb overrides the per-behavior switch entirely.
     if (ctx.climbing) {
-        ctx.setAnim(CLIMB);
+        ctx.play.set(CLIMB);
         ctx.vy = ctx.climb_speed;
         ctx.vx = 0;
         ctx.x = ctx.climb_wall_x;
@@ -58,7 +58,7 @@ pub fn execute(ctx: *context_mod.Context, state: effects.FrameState, dt: f32) vo
         .idle => {
             ctx.vx *= 0.9;
             ctx.idle_time += dt;
-            ctx.setAnim(IDLE);
+            ctx.play.set(IDLE);
         },
         .wander => {
             if (ctx.grounded) {
@@ -66,7 +66,7 @@ pub fn execute(ctx: *context_mod.Context, state: effects.FrameState, dt: f32) vo
                 ctx.vx += (target_vx - ctx.vx) * 5.0 * dt;
             }
             ctx.facing_right = ctx.wander_dir > 0;
-            ctx.setAnim(WALK);
+            ctx.play.set(WALK);
             if (ctx.x < 50 or ctx.x > ctx.screen_w - 50) ctx.wander_dir = -ctx.wander_dir;
         },
         .chase => {
@@ -102,7 +102,7 @@ pub fn execute(ctx: *context_mod.Context, state: effects.FrameState, dt: f32) vo
                         const dir: f32 = if (wall_x > ctx.x) 1.0 else -1.0;
                         const target_vx = dir * ctx.run_speed;
                         ctx.vx += (target_vx - ctx.vx) * 5.0 * dt;
-                        ctx.setAnim(RUN);
+                        ctx.play.set(RUN);
                     }
                 } else if (dy > 30 and ctx.jump_cooldown <= 0) {
                     ctx.failed_jumps +|= 1;
@@ -115,7 +115,7 @@ pub fn execute(ctx: *context_mod.Context, state: effects.FrameState, dt: f32) vo
                     ctx.grounded = false;
                     ctx.vy = -50.0;
                     ctx.vx = std.math.clamp(dx * 0.3, -100, 100);
-                    ctx.setAnim(JUMP);
+                    ctx.play.set(JUMP);
                 } else {
                     // Same height — run toward target.
                     ctx.facing_right = dx > 0;
@@ -123,7 +123,7 @@ pub fn execute(ctx: *context_mod.Context, state: effects.FrameState, dt: f32) vo
                     const use_run = @abs(dx) > 200;
                     const target_vx = dir * (if (use_run) ctx.run_speed else ctx.walk_speed);
                     ctx.vx += (target_vx - ctx.vx) * 5.0 * dt;
-                    ctx.setAnim(if (use_run) RUN else WALK);
+                    ctx.play.set(if (use_run) RUN else WALK);
                 }
             }
         },
@@ -144,22 +144,22 @@ pub fn execute(ctx: *context_mod.Context, state: effects.FrameState, dt: f32) vo
                 }
             }
             if (!ctx.grounded) {
-                ctx.setAnim(JUMP);
-                ctx.setJumpFrame();
+                ctx.play.set(JUMP);
+                ctx.play.setJumpFrame(ctx.vy);
             } else {
                 ctx.setBehavior(.idle, 0.5);
             }
         },
         .wave => {
             ctx.vx *= 0.9;
-            ctx.setAnim(ATTACK1);
+            ctx.play.set(ATTACK1);
         },
         .celebrate => {
             ctx.vx *= 0.9;
-            ctx.setAnim(ATTACK2);
+            ctx.play.set(ATTACK2);
         },
         .push => {
-            ctx.setAnim(PUSH);
+            ctx.play.set(PUSH);
             if (has_target) {
                 const dl = @abs(ctx.x - fw.x);
                 const dr = @abs(ctx.x - (fw.x + fw.w));
@@ -175,16 +175,16 @@ pub fn execute(ctx: *context_mod.Context, state: effects.FrameState, dt: f32) vo
         .throw_rock => {
             ctx.vx *= 0.9;
             ctx.facing_right = state.cursor[0] > ctx.x;
-            ctx.setAnim(THROW);
+            ctx.play.set(THROW);
         },
         .trip => {
             ctx.vx *= 0.95;
-            ctx.setAnim(HURT);
+            ctx.play.set(HURT);
         },
         .dramatic_death => {
             ctx.vx *= 0.95;
-            ctx.setAnim(DEATH);
-            if (ctx.anim_done) {
+            ctx.play.set(DEATH);
+            if (ctx.play.done) {
                 ctx.x = ctx.screen_w * 0.5;
                 ctx.y = ctx.screen_h;
                 ctx.vx = 0;
@@ -204,17 +204,17 @@ pub fn execute(ctx: *context_mod.Context, state: effects.FrameState, dt: f32) vo
             if (@abs(cdx) > 40) {
                 const dir: f32 = if (cdx > 0) 1.0 else -1.0;
                 ctx.vx += (dir * ctx.walk_speed - ctx.vx) * 5.0 * dt;
-                ctx.setAnim(WALK);
+                ctx.play.set(WALK);
             } else {
                 ctx.vx *= 0.85;
-                ctx.setAnim(ATTACK1);
+                ctx.play.set(ATTACK1);
             }
         },
         .flee => {
             ctx.facing_right = ctx.wander_dir > 0;
             const target_vx = ctx.wander_dir * ctx.run_speed;
             ctx.vx += (target_vx - ctx.vx) * 8.0 * dt;
-            ctx.setAnim(RUN);
+            ctx.play.set(RUN);
         },
     }
 }

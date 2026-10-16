@@ -1,7 +1,6 @@
 const std = @import("std");
 const iohelp = @import("../../core/io_helper.zig");
 const shader_mod = @import("../../core/shader.zig");
-const texture_mod = @import("../../core/texture.zig");
 const config_mod = @import("../../core/config.zig");
 const transition_mod = @import("../../core/transition.zig");
 const effects = @import("../../effects.zig");
@@ -19,11 +18,7 @@ const c = @cImport({
     @cInclude("time.h");
 });
 
-const Anim = sprite.Anim;
 const Behavior = sprite.Behavior;
-// Only the JUMP row is referenced here (advanceFrame freezes on jump while
-// airborne). The rest of the sprite anim aliases live in behaviors.zig.
-const JUMP = sprite.JUMP;
 
 pub const Mood = enum(u8) {
     neutral = 0,
@@ -137,10 +132,7 @@ pub const Context = struct {
     screen_h: f32,
     scale: f32 = 2.0,
 
-    anim: Anim = sprite.IDLE,
-    frame: u8 = 0,
-    frame_timer: f32 = 0,
-    anim_done: bool = false,
+    play: sprite.Player = .{},
     facing_right: bool = true,
 
     walk_speed: f32 = 0,
@@ -169,7 +161,7 @@ pub const Context = struct {
     failed_jumps: u8 = 0,
 
     rng: std.Random.DefaultPrng,
-    sprite_tex: ?texture_mod.Texture = null,
+    sheet: sprite.Sheet,
     allocator: std.mem.Allocator,
 
     // AI state
@@ -227,10 +219,6 @@ pub const Context = struct {
 
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) Context {
         const sprite_path = params.getString("sprite", "sprites/buddy.png") orelse "sprites/buddy.png";
-        const tex = texture_mod.Texture.loadFromFile(sprite_path) catch |err| blk: {
-            log.warn("sprite load failed: {s} ({}) - buddy renders without a texture", .{ sprite_path, err });
-            break :blk null;
-        };
 
         const scale: f32 = params.getFloat("scale", 2.0);
         const walk_spd = (32.0 * scale) / (6.0 / 8.0);
@@ -244,7 +232,7 @@ pub const Context = struct {
             .screen_w = width,
             .screen_h = height,
             .scale = scale,
-            .sprite_tex = tex,
+            .sheet = sprite.Sheet.init(sprite_path),
             .rng = std.Random.DefaultPrng.init(iohelp.nowNs()),
             .walk_speed = walk_spd,
             .run_speed = run_spd,
@@ -321,9 +309,9 @@ pub const Context = struct {
         self.behavior = b;
         self.behavior_timer = 0;
         self.behavior_duration = duration;
-        self.anim_done = false;
-        self.frame = 0;
-        self.frame_timer = 0;
+        self.play.done = false;
+        self.play.frame = 0;
+        self.play.timer = 0;
     }
 
     pub fn update(self: *Context, state: effects.FrameState) void {
@@ -509,58 +497,14 @@ pub const Context = struct {
         physics.step(self, state, dt);
 
         // --- Animate ---
-        self.advanceFrame(dt);
+        self.play.advance(dt, !self.grounded);
     }
 
-    pub fn setAnim(self: *Context, anim: Anim) void {
-        if (self.anim.row != anim.row) {
-            self.anim = anim;
-            self.frame = 0;
-            self.frame_timer = 0;
-            self.anim_done = false;
-        }
-    }
 
-    pub fn setJumpFrame(self: *Context) void {
-        if (self.vy > 100) { self.frame = 0; }
-        else if (self.vy > 50) { self.frame = 1; }
-        else if (self.vy > 0) { self.frame = 2; }
-        else if (self.vy > -30) { self.frame = 3; }
-        else if (self.vy > -80) { self.frame = 4; }
-        else if (self.vy > -150) { self.frame = 5; }
-        else { self.frame = 6; }
-    }
 
-    fn advanceFrame(self: *Context, dt: f32) void {
-        if (self.anim.row == JUMP.row and !self.grounded) return;
-        self.frame_timer += dt * self.anim.fps;
-        if (self.frame_timer >= 1.0) {
-            self.frame_timer -= 1.0;
-            if (self.frame + 1 >= self.anim.frames) {
-                if (self.anim.looping) { self.frame = 0; } else { self.anim_done = true; }
-            } else { self.frame += 1; }
-        }
-    }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
-        if (self.sprite_tex) |*tex| {
-            tex.bind(0);
-            c.glUseProgram(prog.program);
-            const loc = c.glGetUniformLocation(prog.program, "iSprite");
-            if (loc >= 0) c.glUniform1i(loc, 0);
-        }
-
-        c.glUseProgram(prog.program);
-        const facing: f32 = if (self.facing_right) 1.0 else -1.0;
-        const col_f: f32 = @floatFromInt(self.frame);
-        const row_f: f32 = @floatFromInt(self.anim.row);
-
-        if (prog.i_particles[0] >= 0)
-            c.glUniform4f(prog.i_particles[0], self.x, self.y, self.scale, facing);
-        if (prog.i_particles[1] >= 0)
-            c.glUniform4f(prog.i_particles[1],
-                col_f * sprite.CELL / sprite.SHEET_W, row_f * sprite.CELL / sprite.SHEET_H,
-                (col_f + 1.0) * sprite.CELL / sprite.SHEET_W, (row_f + 1.0) * sprite.CELL / sprite.SHEET_H);
+        sprite.upload(prog, &self.sheet, &self.play, self.x, self.y, self.scale, self.facing_right);
         // Bubble data: [2] = (len, timer, duration, mood), [3..8] = packed chars
         if (self.bubble_timer > 0 and self.bubble_len > 0) {
             if (prog.i_particles[2] >= 0)
@@ -618,6 +562,6 @@ pub const Context = struct {
 
     pub fn deinit(self: *Context) void {
         ai_brain.cleanup(self);
-        if (self.sprite_tex) |*tex| tex.deinit();
+        self.sheet.deinit();
     }
 };
