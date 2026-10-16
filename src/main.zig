@@ -16,7 +16,6 @@ const effects = @import("effects.zig");
 const cli_mod = @import("cli.zig");
 const strip = @import("strip.zig");
 const renderer_mod = @import("renderer.zig");
-const particles = @import("effects/particles/system.zig");
 
 pub const std_options: std.Options = .{ .log_level = .info };
 const log = std.log.scoped(.hyprglaze);
@@ -216,7 +215,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var prev_time_f64: f64 = 0.0;
     var frame_count: u32 = 0;
     var cached_windows: [hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect = undefined;
-    var cached_collision_rects: [hypr.max_visible_windows]particles.Rect = undefined;
     var cached_window_count: u8 = 0;
     var cached_window_info: [hypr.max_visible_windows]effects.WindowInfo = undefined;
     var cached_focused_class: [64]u8 = [_]u8{0} ** 64;
@@ -299,7 +297,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         0,
     );
     trans.seed(raw0.win, seed_cursor, raw0.win_address);
-    cacheWindows(&cached_windows, &cached_collision_rects, &cached_window_count, &raw0);
+    cacheWindows(&cached_windows, &cached_window_count, &raw0);
     for (0..raw0.window_count) |i| cached_window_info[i] = raw0.window_info[i];
     cached_focused_class = raw0.focused_class;
     cached_focused_class_len = raw0.focused_class_len;
@@ -332,7 +330,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // switch jumps more than one (1 → 5 with 3 in between slid 3's windows
     // out). `strip_dirty` forces one re-derive when the slide settles, so
     // the outgoing set is swapped back for the normal strip instead of
-    // lingering off-screen as collision rects.
+    // lingering off-screen as window rects.
     var prev_snapshot: hypr.VisibleWindows = .{};
     var outgoing: hypr.VisibleWindows = .{};
     var slide_was_active = false;
@@ -625,15 +623,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 transition.smoothAlpha(cfg.geometry_smoothing, dt),
             );
 
-            for (0..cached_window_count) |i| {
-                cached_collision_rects[i] = .{
-                    .x = cached_windows[i].x,
-                    .y = cached_windows[i].y,
-                    .w = cached_windows[i].w,
-                    .h = cached_windows[i].h,
-                };
-            }
-
             // Update effect
             r.fx().update(.{
                 .dt = dt,
@@ -641,7 +630,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 .cursor = trans.current_cursor,
                 .focused_win = trans.current_win,
                 .windows = cached_windows[0..cached_window_count],
-                .collision_rects = cached_collision_rects[0..cached_window_count],
                 .window_info = cached_window_info[0..cached_window_count],
                 .focused_class = cached_focused_class,
                 .focused_class_len = cached_focused_class_len,
@@ -756,19 +744,12 @@ fn awaitOutput(
 
 fn cacheWindows(
     cached: *[hypr.max_visible_windows]shader_mod.ShaderProgram.WindowRect,
-    collision: *[hypr.max_visible_windows]particles.Rect,
     count: *u8,
     raw: *const strip.RawState,
 ) void {
     count.* = raw.window_count;
     for (0..raw.window_count) |i| {
         cached[i] = raw.windows[i];
-        collision[i] = .{
-            .x = raw.windows[i].x,
-            .y = raw.windows[i].y,
-            .w = raw.windows[i].w,
-            .h = raw.windows[i].h,
-        };
     }
 }
 

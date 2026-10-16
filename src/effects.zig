@@ -7,7 +7,6 @@ const transition_mod = @import("core/transition.zig");
 const config_mod = @import("core/config.zig");
 const palette_mod = @import("core/palette.zig");
 
-const particles_sys = @import("effects/particles/system.zig");
 const particles = @import("effects/particles/context.zig");
 const windowglow = @import("effects/windowglow.zig");
 const glitch = @import("effects/glitch.zig");
@@ -43,7 +42,7 @@ pub const WindowInfo = struct {
 };
 
 /// Per-frame snapshot of the desktop handed to every effect's `update`.
-/// The slice fields (`windows`, `collision_rects`, `window_info`) and the
+/// The slice fields (`windows`, `window_info`) and the
 /// `palette` pointer are only valid for the duration of the call - effects
 /// that need them later (e.g. in `upload`) must copy what they keep.
 pub const FrameState = struct {
@@ -52,7 +51,6 @@ pub const FrameState = struct {
     cursor: [2]f32,
     focused_win: transition_mod.Rect,
     windows: []const shader_mod.ShaderProgram.WindowRect,
-    collision_rects: []const particles_sys.Rect,
     window_info: ?[]const WindowInfo = null,
     focused_class: [64]u8 = [_]u8{0} ** 64,
     focused_class_len: u8 = 0,

@@ -6,6 +6,8 @@ const effects = @import("../../effects.zig");
 const audio_mod = @import("../audio.zig");
 const bands_mod = @import("../bands.zig");
 const boids_mod = @import("boids.zig");
+const hypr = @import("../../core/hypr.zig");
+const particles_sys = @import("../particles/system.zig");
 
 const Uniforms = @import("../uniforms.zig").Uniforms;
 
@@ -303,7 +305,11 @@ pub const Context = struct {
         const burst = roost_prev > 0.55 and self.roost <= 0.55;
 
         // Flock + predator simulation
-        self.sys.update(dt, state.cursor[0], state.cursor[1], state.collision_rects, .{
+        // The flock perches on and steers around the windows as plain rects.
+        var rects: [hypr.max_visible_windows]particles_sys.Rect = undefined;
+        const n_rects = @min(state.windows.len, rects.len);
+        for (state.windows[0..n_rects], rects[0..n_rects]) |w, *r| r.* = .{ .x = w.x, .y = w.y, .w = w.w, .h = w.h };
+        self.sys.update(dt, state.cursor[0], state.cursor[1], rects[0..n_rects], .{
             .bass = self.an.bass,
             .beat = self.an.beat,
             .beat_hit = beat_hit,
