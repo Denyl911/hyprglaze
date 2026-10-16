@@ -1435,18 +1435,17 @@ fn reloadConfig(
 
     // Reinit effect every reload so per-effect params ([particles], [buddy], etc.)
     // pick up config changes even when the effect name itself is unchanged.
+    // Build the new effect before tearing down the old one (as
+    // rebuildEffect does): if it fails, the running effect stays intact
+    // instead of being left deinited and still drawn.
     const effect_name_changed = !std.mem.eql(u8, cfg.effect, new_cfg.effect);
-    effect.deinit();
-    effect.* = effects.Effect.init(new_cfg.effect, allocator, surf_w, surf_h, &new_cfg) catch |err| {
-        log.warn("effect '{s}' failed: {}, falling back to windowglow", .{ new_cfg.effect, err });
-        effect.* = effects.Effect.init("windowglow", allocator, 0, 0, &new_cfg) catch |fb_err| {
-            log.err("fallback effect init failed: {}", .{fb_err});
-            config_mod.deinit(&new_cfg, allocator);
-            return fb_err;
-        };
+    const fresh = effects.Effect.init(new_cfg.effect, allocator, surf_w, surf_h, &new_cfg) catch |err| {
+        log.warn("effect '{s}' failed: {} — keeping the current effect", .{ new_cfg.effect, err });
         config_mod.deinit(&new_cfg, allocator);
         return err;
     };
+    effect.deinit();
+    effect.* = fresh;
     if (effect_name_changed) {
         log.info("effect switched: {s}", .{new_cfg.effect});
     } else {
