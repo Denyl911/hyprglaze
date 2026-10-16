@@ -17,7 +17,7 @@ const trail_len = 4;
 // read as a streak rather than overlapping the head into one blob.
 const trail_history = 90;
 const slots_per = trail_len + 1;
-const max_bodies = 300 / slots_per; // 60
+const max_bodies = shader_mod.max_particles / slots_per; // 60
 
 // Gravitational constant, tuned for orbital periods of a few seconds at
 // a few hundred pixels around a typical window (mass = sqrt(area)).
@@ -369,6 +369,8 @@ pub const Context = struct {
         // Slot layout: (x, y, size, color_idx + 16*trail_age). Age 0 = head.
         // Spacing uses trail_len+1 so the oldest sample stays short of a full
         // history wrap (which would land back on the head).
+        // Packed and sent in one call rather than one glUniform4f per slot.
+        var packed_slots: [max_bodies * slots_per][4]f32 = undefined;
         var slot: u32 = 0;
         const spacing = trail_history / (trail_len + 1);
         for (0..self.count) |i| {
@@ -382,9 +384,7 @@ pub const Context = struct {
             const ft = std.math.clamp(b.birth / birth_fade_secs, 0.0, 1.0);
             const fade = ft * ft * (3.0 - 2.0 * ft);
             const dsize = @min(b.size * b.glow * (1.0 + be * 0.6), render_size_max) * fade;
-            if (prog.i_particles[slot] >= 0) {
-                c.glUniform4f(prog.i_particles[slot], b.pos[0], b.pos[1], dsize, b.color_idx);
-            }
+            packed_slots[slot] = .{ b.pos[0], b.pos[1], dsize, b.color_idx };
             slot += 1;
 
             for (0..trail_len) |t| {
@@ -392,12 +392,12 @@ pub const Context = struct {
                 const h_idx = (self.history_idx -% @as(u32, @intCast(age))) % trail_history;
                 const pos = self.history[i][h_idx];
                 const tag = b.color_idx + 16.0 * @as(f32, @floatFromInt(t + 1));
-                if (prog.i_particles[slot] >= 0) {
-                    c.glUniform4f(prog.i_particles[slot], pos[0], pos[1], dsize, tag);
-                }
+                packed_slots[slot] = .{ pos[0], pos[1], dsize, tag };
                 slot += 1;
             }
         }
+        if (prog.i_particles[0] >= 0 and slot > 0)
+            c.glUniform4fv(prog.i_particles[0], @intCast(slot), @ptrCast(&packed_slots[0]));
         if (prog.i_particle_count >= 0) {
             c.glUniform1i(prog.i_particle_count, @intCast(slot));
         }

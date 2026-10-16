@@ -564,6 +564,10 @@ pub const Context = struct {
                 self.seedRandomPinwheel();
             }
             if (self.stir) self.stirAt(state.cursor);
+        }
+        // Packed once after the catch-up steps: it only reads the latest
+        // pair of buffers, so the intermediate packs were thrown away.
+        if (steps > 0) {
             self.buildRgba();
             self.dirty = true;
         }
