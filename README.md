@@ -28,12 +28,12 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 | `cellbloom` | Living Voronoi tissue around windows and cursor: rounded cells with glowing membranes that divide and fuse, lit by the music |
 | `concentric` | SDF concentric rings radiating from window edges, cursor interaction |
 | `fluid` | Metaball contour lines that merge organically around windows and cursor |
-| `starfield` | Radial starfield with audio-reactive speed, per-band star colors, beat pulses |
+| `starfield` | Flight through a 3D starfield: the cursor steers and the camera banks into turns, stars streak past with diffraction spikes on the bright ones, through a palette nebula that zooms by forever. Music pushes the speed, kicks surge it, and now and then it jumps to hyperspace |
 | `visualizer` | Stereo waveform with Catmull-Rom interpolation, amplitude-driven palette colors |
-| `milkdrop` | Feedback-loop visualizer with kaleidoscope, beat detection, FBO pipeline |
+| `milkdrop` | MilkDrop-style visualizer: eleven presets of per-frame motion equations (zoom, rotation, warp, ripple, kaleidoscope) over a half-float feedback loop, with scope/circle/spectrum/spiral waveforms, custom shapes, borders and video echo, blending into each other through patterned transitions. One preset draws your windows into the loop. Dreams on a synthetic wave when no music plays |
 | `buddy` | Animated sprite character with procedural behaviors, palette-recolored |
 | `ai-buddy` | AI-driven buddy with mood system, emote particles, window awareness, wall climbing |
-| `glitch` | Audio-reactive glitch art with RGB split, block displacement, VHS wobble, scanlines |
+| `glitch` | Circuit-bent video feedback: a camera filming its own monitor, with your window frames as the only light. Stutter, freezes, skipping and slit-scan playback, sync loss, mosaic, crude dither, all in the theme's surface tones with brief accent bursts; music speeds the bends up |
 | `tide` | Rising water line tied to wall-clock time, with teardrops and splash jets |
 | `fire` | Flames rise from window top edges; moving windows leave a directional wake |
 | `voltaic` | Lightning arcs between window borders, St. Elmo's fire on the focused frame, beat-driven discharges |
@@ -220,6 +220,11 @@ compass = true        # the cursor is a compass needle that follows the field
 music = true          # pulses quicken and flash with the music
 # sink = "..."        # PulseAudio monitor source (auto-detected by default)
 
+[glitch]
+lines = 720           # feedback loop's video resolution in lines (120-2160); fewer = chunkier
+# music = true        # music speeds the bends up and kicks throw extra ones in
+# sink = "..."        # PulseAudio monitor source (auto-detected by default)
+
 [ivy]
 growth = 1.0          # plant pace multiplier (growth and leaf lifetimes)
 brightness = 1.0      # foliage glow multiplier
@@ -313,6 +318,24 @@ Effects that react to sound (visualizer, milkdrop, starfield, and others marked 
 sink = "alsa_output.pci-0000_00_1f.3.analog-stereo"
 ```
 
+`milkdrop` reads the same section, plus its own keys:
+
+```toml
+[visualizer]
+cycle = 24.0          # average seconds per preset before blending to the next
+# preset = "tunnel"   # pin one: kaleido-bloom, tunnel, liquid, galaxy, lissajous,
+                      #   starburst, fountain, ripples, window-frames, polygons, plasma-storm
+scale = 0.5           # feedback loop resolution relative to the screen (0.25-1)
+```
+
+`starfield` reads it too:
+
+```toml
+[visualizer]
+stars = 2500          # stars in flight (100-4000)
+jumps = true          # occasional hyperspace jumps
+```
+
 List available sinks with `pactl list short sinks`.
 
 ### AI buddy (AWS Bedrock)
@@ -358,7 +381,7 @@ The watcher emits one geometry event per monitor, carrying that monitor's active
 | `iPalette[16]` | `vec3[]` | Theme color ramp |
 | `iPaletteSize` | `int` | Number of palette colors |
 | `iPaletteBg/Fg` | `vec3` | Theme background/foreground |
-| `iParticles[300]` | `vec4[]` | Shared effect data array (buddy, starfield, visualizer, glitch, moire) |
+| `iParticles[300]` | `vec4[]` | Shared effect data array (buddy, starfield, visualizer, moire) |
 | `iParticleCount` | `int` | Number of active entries |
 | `iSprite` | `sampler2D` | Sprite sheet texture / FBO feedback |
 
