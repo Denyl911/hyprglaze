@@ -32,7 +32,7 @@ fn aiPath(buf: *PathBuf, seq: u32, comptime suffix: []const u8) ?[]const u8 {
 fn removeSeqFiles(seq: u32) void {
     var buf: PathBuf = undefined;
     inline for (.{ "req", "resp", "done", "err" }) |suffix| {
-        if (aiPath(&buf, seq, suffix)) |p| iohelp.deleteFileAbsolute(p) catch {};
+        if (aiPath(&buf, seq, suffix)) |p| iohelp.deleteFile(p) catch {};
     }
 }
 
@@ -215,7 +215,7 @@ pub fn callHaiku(ctx: *context_mod.Context) bool {
     const tmp_done = aiPath(&done_buf, ctx.ai_seq, "done") orelse return false;
     const tmp_err = aiPath(&err_buf, ctx.ai_seq, "err") orelse return false;
 
-    iohelp.writeFileAbsolute(tmp_request, body) catch return false;
+    iohelp.writeFile(tmp_request, body) catch return false;
 
     log.debug("AI > standing={s} focused={s} visited={d} mood={s} time={s}({d}:00)", .{
         if (ctx.current_window_len > 0) ctx.current_window[0..ctx.current_window_len] else "ground",
@@ -253,7 +253,7 @@ pub fn checkAiResponse(ctx: *context_mod.Context) void {
     const tmp_done = aiPath(&done_buf, ctx.ai_seq, "done") orelse return;
     const tmp_response = aiPath(&resp_buf, ctx.ai_seq, "resp") orelse return;
 
-    if (!iohelp.accessAbsolute(tmp_done)) return;
+    if (!iohelp.exists(tmp_done)) return;
 
     const resp = iohelp.readFileAlloc(ctx.allocator, tmp_response, 64 * 1024) catch return;
     defer ctx.allocator.free(resp);

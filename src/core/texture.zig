@@ -12,16 +12,9 @@ pub const Texture = struct {
     width: i32,
     height: i32,
 
-    const system_data_dir = "/usr/share/hyprglaze";
-
     pub fn loadFromFile(path: []const u8) !Texture {
-        // Resolve path: relative, absolute, then system data dir
-        var resolved = path;
         var sys_buf: [512]u8 = undefined;
-        if (!iohelp.accessRelative(path)) {
-            const sys_path = std.fmt.bufPrint(&sys_buf, "{s}/{s}", .{ system_data_dir, path }) catch path;
-            if (iohelp.accessAbsolute(sys_path)) resolved = sys_path;
-        }
+        const resolved = iohelp.resolveDataPath(path, &sys_buf) orelse path;
 
         // Need null-terminated path for stb
         var path_buf: [512]u8 = undefined;

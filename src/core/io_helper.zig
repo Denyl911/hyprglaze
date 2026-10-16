@@ -42,78 +42,35 @@ pub const Timer = struct {
     }
 };
 
-/// Open an absolute-path file, read up to `max_size` bytes, allocate + return.
+// File helpers. Paths may be absolute or relative to the CWD: std's
+// `*Absolute` variants only assert the path is absolute before opening it
+// from the CWD, and that assert is a crash on a user-supplied relative path
+// (`--config ./foo.toml`, a relative shader in the config).
+
+/// Read up to `max_size` bytes of a file into a new allocation.
 pub fn readFileAlloc(
     allocator: std.mem.Allocator,
     path: []const u8,
     max_size: usize,
 ) ![]u8 {
-    const i = io();
-    const file = try std.Io.Dir.openFileAbsolute(i, path, .{});
-    defer file.close(i);
-
-    const size = try file.length(i);
-    if (size > max_size) return error.FileTooLarge;
-
-    const buf = try allocator.alloc(u8, @intCast(size));
-    errdefer allocator.free(buf);
-    _ = try file.readPositionalAll(i, buf, 0);
-    return buf;
+    return readFileSentinel(allocator, path, max_size, null);
 }
 
-pub fn writeFileAbsolute(path: []const u8, data: []const u8) !void {
-    const i = io();
-    const file = try std.Io.Dir.createFileAbsolute(i, path, .{});
-    defer file.close(i);
-    try file.writeStreamingAll(i, data);
-}
-
-pub fn renameAbsolute(old: []const u8, new: []const u8) !void {
-    const i = io();
-    try std.Io.Dir.renameAbsolute(old, new, i);
-}
-
-pub fn makeDirAbsolute(path: []const u8) !void {
-    const i = io();
-    try std.Io.Dir.createDirAbsolute(i, path, .default_dir);
-}
-
-pub fn deleteFileAbsolute(path: []const u8) !void {
-    const i = io();
-    try std.Io.Dir.deleteFileAbsolute(i, path);
-}
-
-pub fn accessAbsolute(path: []const u8) bool {
-    const i = io();
-    std.Io.Dir.accessAbsolute(i, path, .{}) catch return false;
-    return true;
-}
-
-pub fn accessRelative(path: []const u8) bool {
-    const i = io();
-    std.Io.Dir.cwd().access(i, path, .{}) catch return false;
-    return true;
-}
-
-/// Read a file at an absolute path into a null-terminated buffer (for GLSL source, etc.).
+/// Read a file into a null-terminated buffer (for GLSL source, etc.).
 pub fn readFileAlloc0(
     allocator: std.mem.Allocator,
     path: []const u8,
     max_size: usize,
 ) ![:0]u8 {
-    const data = try readFileAlloc(allocator, path, max_size);
-    defer allocator.free(data);
-    const out = try allocator.allocSentinel(u8, data.len, 0);
-    @memcpy(out, data);
-    return out;
+    return readFileSentinel(allocator, path, max_size, 0);
 }
 
-/// Read a file at a CWD-relative path. Returns null-terminated buffer.
-pub fn readFileRelative0(
+fn readFileSentinel(
     allocator: std.mem.Allocator,
     path: []const u8,
     max_size: usize,
-) ![:0]u8 {
+    comptime sentinel: ?u8,
+) !(if (sentinel) |s| [:s]u8 else []u8) {
     const i = io();
     const file = try std.Io.Dir.cwd().openFile(i, path, .{});
     defer file.close(i);
@@ -121,10 +78,62 @@ pub fn readFileRelative0(
     const size = try file.length(i);
     if (size > max_size) return error.FileTooLarge;
 
-    const out = try allocator.allocSentinel(u8, @intCast(size), 0);
-    errdefer allocator.free(out);
-    _ = try file.readPositionalAll(i, out, 0);
-    return out;
+    const buf = if (sentinel) |s|
+        try allocator.allocSentinel(u8, @intCast(size), s)
+    else
+        try allocator.alloc(u8, @intCast(size));
+    errdefer allocator.free(buf);
+    _ = try file.readPositionalAll(i, buf, 0);
+    return buf;
+}
+
+pub fn writeFile(path: []const u8, data: []const u8) !void {
+    const i = io();
+    const file = try std.Io.Dir.cwd().createFile(i, path, .{});
+    defer file.close(i);
+    try file.writeStreamingAll(i, data);
+}
+
+pub fn rename(old: []const u8, new: []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+    try std.Io.Dir.rename(cwd, old, cwd, new, io());
+}
+
+/// mkdir -p.
+pub fn makePath(path: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(io(), path);
+}
+
+pub fn deleteFile(path: []const u8) !void {
+    try std.Io.Dir.cwd().deleteFile(io(), path);
+}
+
+pub fn exists(path: []const u8) bool {
+    std.Io.Dir.cwd().access(io(), path, .{}) catch return false;
+    return true;
+}
+
+pub const system_data_dir = "/usr/share/hyprglaze";
+
+/// Resolve a shipped data file (shader, sprite): as given if it exists
+/// (relative to the CWD, or absolute), else under /usr/share/hyprglaze/.
+/// Null when neither exists.
+pub fn resolveDataPath(path: []const u8, buf: *[512]u8) ?[]const u8 {
+    if (exists(path)) return path;
+    if (std.fs.path.isAbsolute(path)) return null;
+    const full = std.fmt.bufPrint(buf, "{s}/{s}", .{ system_data_dir, path }) catch return null;
+    return if (exists(full)) full else null;
+}
+
+test "file helpers take relative paths" {
+    // The test runner's CWD is the build root.
+    const data = try readFileAlloc(std.testing.allocator, "build.zig.zon", 1 << 20);
+    defer std.testing.allocator.free(data);
+    try std.testing.expect(std.mem.indexOf(u8, data, ".name = .hyprglaze") != null);
+    try std.testing.expect(exists("./build.zig"));
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings("shaders/flux.frag", resolveDataPath("shaders/flux.frag", &buf).?);
+    try std.testing.expect(resolveDataPath("/nonexistent/x.frag", &buf) == null);
 }
 
 // libc shims, shared across modules so each one doesn't redeclare the externs.

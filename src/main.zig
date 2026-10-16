@@ -1599,29 +1599,9 @@ fn parseCli(allocator: std.mem.Allocator, raw_argv: []const [*:0]const u8) !CliA
     return out;
 }
 
-const system_data_dir = "/usr/share/hyprglaze";
-
-/// Resolve a data file path: try relative, then absolute, then /usr/share/hyprglaze/
-fn resolveDataPath(path: []const u8, buf: *[512]u8) ?[]const u8 {
-    // 1. Relative to CWD
-    if (iohelp.accessRelative(path)) return path;
-    // 2. Absolute path
-    if (path.len > 0 and path[0] == '/') {
-        if (iohelp.accessAbsolute(path)) return path;
-    }
-    // 3. System data dir fallback
-    const full = std.fmt.bufPrint(buf, "{s}/{s}", .{ system_data_dir, path }) catch return null;
-    if (iohelp.accessAbsolute(full)) return full;
-    return null;
-}
-
 fn loadShaderFile(allocator: std.mem.Allocator, path: []const u8) ![:0]const u8 {
     var resolve_buf: [512]u8 = undefined;
-    const resolved = resolveDataPath(path, &resolve_buf) orelse path;
-
-    if (iohelp.readFileRelative0(allocator, resolved, 1024 * 1024)) |source| {
-        return source;
-    } else |_| {}
-    return try iohelp.readFileAlloc0(allocator, resolved, 1024 * 1024);
+    const resolved = iohelp.resolveDataPath(path, &resolve_buf) orelse path;
+    return iohelp.readFileAlloc0(allocator, resolved, 1024 * 1024);
 }
 
