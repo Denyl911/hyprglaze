@@ -1,5 +1,4 @@
 zig-out/
-zig-cache/
 .zig-cache/
 .cache/
 zig-pkg/
@@ -9,8 +8,7 @@ zig-pkg/
 *.swp
 *.swo
 
-# AWS credentials — NEVER commit
-hyprglaze-aws.env
+# Credentials (hyprglaze-aws.env and the like) — NEVER commit
 *.env
 
 # Aseprite source files
@@ -38,4 +36,7 @@ sprites/character.png
 .playwright-mcp/
 LGFae-swww/
 *.mp4
+# Tracked on purpose: served by GitHub Pages at /hyprglaze/demo.mp4 for
+# external links (nothing in the repo embeds it; the README uses demo.gif).
+!demo.mp4
 tools/__pycache__/
