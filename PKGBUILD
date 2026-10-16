@@ -7,7 +7,7 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/slastra/hyprglaze"
 license=('MIT')
 depends=('hyprland>=0.55' 'wayland' 'mesa' 'libglvnd' 'libpulse')
-makedepends=('git' 'zig>=0.16' 'wayland-protocols' 'stb')
+makedepends=('git' 'zig>=0.16' 'stb')
 optdepends=('aws-cli-v2: AI buddy via AWS Bedrock')
 provides=('hyprglaze')
 conflicts=('hyprglaze')

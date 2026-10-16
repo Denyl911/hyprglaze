@@ -65,7 +65,7 @@ yay -S hyprglaze-git
 ### From source
 
 ```
-sudo pacman -S zig wayland wayland-protocols mesa libglvnd stb libpulse
+sudo pacman -S zig wayland mesa libglvnd stb libpulse
 zig build
 zig build run
 ```
