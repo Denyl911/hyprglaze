@@ -3,7 +3,6 @@ const shader_mod = @import("../../core/shader.zig");
 const config_mod = @import("../../core/config.zig");
 const effects = @import("../../effects.zig");
 const audio_mod = @import("../visualizer/audio.zig");
-const iohelp = @import("../../core/io_helper.zig");
 
 const log = std.log.scoped(.milkdrop);
 
@@ -185,6 +184,10 @@ pub const Context = struct {
     warp_prog: c.GLuint = 0,
     reactive_prog: c.GLuint = 0,
     vao: c.GLuint = 0,
+    /// GL objects above exist (see ensureGl).
+    gl_ready: bool = false,
+    /// Effect clock (f64: see clock.zig), the shaders' uTime.
+    now: f64 = 0,
 
     // Smoothed energy bands
     bass: f32 = 0,
@@ -207,48 +210,40 @@ pub const Context = struct {
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32, params: config_mod.EffectParams) !Context {
         const audio = try audio_mod.spawn(allocator, params);
 
-        const w: i32 = @intFromFloat(width);
-        const h: i32 = @intFromFloat(height);
+        return .{
+            .audio = audio,
+            .allocator = allocator,
+            .width = @intFromFloat(width),
+            .height = @intFromFloat(height),
+        };
+    }
 
-        // NOTE: unlike other effects (which defer GL work to first upload),
-        // milkdrop creates its FBO/textures/programs right here and so
-        // relies on Effect.init being called with a current GL context.
-        var textures: [2]c.GLuint = .{ 0, 0 };
-        c.glGenTextures(2, &textures);
-        for (0..2) |i| {
-            c.glBindTexture(c.GL_TEXTURE_2D, textures[i]);
-            c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_RGBA8, w, h, 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, null);
+    /// Create the ping-pong textures, FBO, VAO and the two internal
+    /// programs on first upload: init runs before the GL context it would
+    /// draw with exists (and again for a fresh context after a loss).
+    fn ensureGl(self: *Context) void {
+        if (self.gl_ready) return;
+        self.gl_ready = true;
+        c.glGenTextures(2, &self.tex);
+        for (self.tex) |t| {
+            c.glBindTexture(c.GL_TEXTURE_2D, t);
+            c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_RGBA8, self.width, self.height, 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, null);
             c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
             c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
             c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
             c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
         }
-
-        var fbo: c.GLuint = 0;
-        c.glGenFramebuffers(1, &fbo);
-        var vao: c.GLuint = 0;
-        c.glGenVertexArrays(1, &vao);
-
-        const warp_prog = compileProgram(vert_src, warp_frag_src);
-        const reactive_prog = compileProgram(vert_src, reactive_frag_src);
-        if (warp_prog == 0 or reactive_prog == 0)
+        c.glGenFramebuffers(1, &self.fbo);
+        c.glGenVertexArrays(1, &self.vao);
+        self.warp_prog = compileProgram(vert_src, warp_frag_src);
+        self.reactive_prog = compileProgram(vert_src, reactive_frag_src);
+        if (self.warp_prog == 0 or self.reactive_prog == 0)
             log.err("internal shader compile failed", .{});
-
-        return .{
-            .audio = audio,
-            .allocator = allocator,
-            .fbo = fbo,
-            .tex = textures,
-            .width = w,
-            .height = h,
-            .warp_prog = warp_prog,
-            .reactive_prog = reactive_prog,
-            .vao = vao,
-        };
     }
 
     pub fn update(self: *Context, state: effects.FrameState) void {
         const dt = @min(state.dt, 0.05);
+        self.now += dt;
         const wave = self.audio.getWaveform();
 
         // Cache palette from FrameState
@@ -295,8 +290,9 @@ pub const Context = struct {
     }
 
     pub fn upload(self: *Context, prog: *const shader_mod.ShaderProgram) void {
+        self.ensureGl();
         const wave = self.audio.getWaveform();
-        const time: f32 = @floatCast(@as(f64, @floatFromInt(iohelp.nowNs())) / 1_000_000_000.0);
+        const time: f32 = @floatCast(self.now);
         const prev = 1 - self.current;
         const curr = self.current;
 
@@ -363,6 +359,7 @@ pub const Context = struct {
 
     pub fn deinit(self: *Context) void {
         audio_mod.shutdown(self.audio, self.allocator);
+        if (!self.gl_ready) return;
         c.glDeleteFramebuffers(1, &self.fbo);
         c.glDeleteTextures(2, &self.tex);
         c.glDeleteVertexArrays(1, &self.vao);
