@@ -62,7 +62,7 @@ pub const Context = struct {
 
     /// Pulse clock along the lines, quickening with music energy
     /// (accumulated so a rate change never snaps phase).
-    flow: f32 = 0,
+    flow: f64 = 0,
     /// Compass needle heading (radians), eased toward the local field.
     needle: f32 = 0,
     needle_seeded: bool = false,
@@ -228,7 +228,7 @@ pub const Context = struct {
             c.glUniform4fv(self.loc_poles, @intCast(self.pole_count), @ptrCast(&self.poles[0]));
         if (self.loc_pole_count >= 0) c.glUniform1i(self.loc_pole_count, @intCast(self.pole_count));
         if (self.loc_lines >= 0) c.glUniform1f(self.loc_lines, self.lines);
-        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, self.flow);
+        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);
     }

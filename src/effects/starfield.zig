@@ -17,7 +17,7 @@ pub const Context = struct {
     an: bands_mod.Splitter = .{},
     velocity: f32 = 1.0,     // smoothed flight speed multiplier
     wobble: f32 = 0,         // velocity offset from beat
-    flight_time: f32 = 0,    // accumulated time scaled by velocity (only increases)
+    flight_time: f64 = 0,    // accumulated time scaled by velocity (only increases)
 
     pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) !Context {
         const audio = try audio_mod.spawn(allocator, params);
@@ -57,7 +57,7 @@ pub const Context = struct {
                 self.an.bands[0], self.an.bands[1], self.an.bands[2], self.an.bands[3]);
         if (prog.i_particles[1] >= 0)
             c.glUniform4f(prog.i_particles[1],
-                self.an.bands[4], self.an.bands[5], self.an.beat, self.flight_time);
+                self.an.bands[4], self.an.bands[5], self.an.beat, @floatCast(self.flight_time));
         if (prog.i_particle_count >= 0)
             c.glUniform1i(prog.i_particle_count, 2);
     }

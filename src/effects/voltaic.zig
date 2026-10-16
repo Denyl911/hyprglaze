@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock.zig");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
@@ -157,7 +158,7 @@ pub const Context = struct {
 
     width: f32,
     height: f32,
-    now: f32 = 0,
+    now: f64 = 0,
 
     arcs: [max_arcs]Arc = [_]Arc{.{}} ** max_arcs,
     next_slot: u8 = 0,
@@ -197,9 +198,9 @@ pub const Context = struct {
     // minute; detected beats snap it to the nearest integer to keep the
     // clock anchored to real music across passages of different energy.
     bpm_est: f32 = 120.0,
-    beat_phase_total: f32 = 0.0,
+    beat_phase_total: f64 = 0,
     beat_phase: f32 = 0.0,
-    last_beat_now: f32 = -1.0,
+    last_beat_now: f64 = -1.0,
 
     /// Cached uniform locations — resolved on first upload, re-resolved on
     /// shader hot-reload (program ID changes).
@@ -361,7 +362,7 @@ pub const Context = struct {
         const sh = std.math.clamp(amp * 0.014, 0.3, 1.4) * (0.8 + self.an.treble * 0.3);
         for (1..n) |i| {
             const ph = pts[i][0] * 0.043 + pts[i][1] * 0.031;
-            const wig = (@sin(self.now * 24.0 + ph) + 0.5 * @sin(self.now * 53.0 + ph * 1.7)) * sh;
+            const wig = (@sin(clock.phase(self.now, 24.0) + ph) + 0.5 * @sin(clock.phase(self.now, 53.0) + ph * 1.7)) * sh;
             pts[i][0] -= uy * wig;
             pts[i][1] += ux * wig;
         }
@@ -380,7 +381,7 @@ pub const Context = struct {
             // Per-segment brightness ripple — an unstable arc's glow crawls
             // and stutters along the channel rather than burning evenly.
             const bz = pts[i][0] * 0.02 + pts[i][1] * 0.02;
-            sb *= 0.90 + 0.10 * @sin(self.now * 40.0 + bz);
+            sb *= 0.90 + 0.10 * @sin(clock.phase(self.now, 40.0) + bz);
             // Hot leader tip: the advancing frontier segment burns brighter.
             if (frac < 1.0) sb *= 1.0 + (1.0 - frac) * 1.4;
             const q = [2]f32{
@@ -461,7 +462,7 @@ pub const Context = struct {
         if (beat_hit) {
             // Update tempo estimate from inter-onset interval (IOI).
             if (self.last_beat_now > 0.0) {
-                const ioi = self.now - self.last_beat_now;
+                const ioi: f32 = @floatCast(self.now - self.last_beat_now);
                 if (ioi >= 0.25 and ioi <= 2.0) {
                     var ioi_bpm: f32 = 60.0 / ioi;
                     while (ioi_bpm > 180.0) { ioi_bpm *= 0.5; }
@@ -475,8 +476,8 @@ pub const Context = struct {
         }
 
         // Fractional phases for crossing detection.
-        const ppf = prev_phase_total - @floor(prev_phase_total);
-        const cpf = self.beat_phase_total - @floor(self.beat_phase_total);
+        const ppf: f32 = @floatCast(prev_phase_total - @floor(prev_phase_total));
+        const cpf: f32 = @floatCast(self.beat_phase_total - @floor(self.beat_phase_total));
         self.beat_phase = cpf;
 
         // Half-beat "and": 8th-note syncopation.
@@ -763,7 +764,7 @@ pub const Context = struct {
 
         // Effect-local time (fire.zig pattern) — keeps corona noise
         // coordinates small so f32 precision holds over long sessions.
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, self.now);
+        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.an.beat);
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.an.bass);
         if (self.loc_treble >= 0) c.glUniform1f(self.loc_treble, self.an.treble);

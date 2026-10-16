@@ -207,7 +207,7 @@ pub const Context = struct {
     allocator: std.mem.Allocator,
     accum: *Accum,
 
-    now: f32 = 0,
+    now: f64 = 0,
 
     // Audio analysis (glitch.zig pattern, shared in bands.zig)
     an: bands_mod.Splitter = .{},
@@ -455,7 +455,7 @@ pub const Context = struct {
 
         if (self.loc_pixel >= 0) c.glUniform1f(self.loc_pixel, self.pixel);
         // Effect-local time (fire.zig pattern) for noise precision.
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, self.now);
+        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.an.beat);
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.an.bass);
         if (self.loc_energy >= 0) c.glUniform1f(self.loc_energy, self.an.energy);

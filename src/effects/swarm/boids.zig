@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("../clock.zig");
 const particles_sys = @import("../particles/system.zig");
 
 pub const max_boids = 256;
@@ -51,7 +52,7 @@ pub const BoidSystem = struct {
     width: f32,
     height: f32,
     rng: std.Random.DefaultPrng,
-    now: f32 = 0,
+    now: f64 = 0,
 
     /// Shared migration waypoint: the whole flock drifts toward a slowly
     /// wandering target, which keeps it moving as one body across the sky.
@@ -462,8 +463,8 @@ pub const BoidSystem = struct {
             // Internal waves: slow per-boid wander so the cloud undulates
             // from within instead of gliding as a rigid body.
             const ph = @as(f32, @floatFromInt(i));
-            steer_x += @sin(self.now * 0.7 + ph * 2.39) * 70.0 * live;
-            steer_y += @cos(self.now * 0.9 + ph * 1.71) * 70.0 * live;
+            steer_x += @sin(clock.phase(self.now, 0.7) + ph * 2.39) * 70.0 * live;
+            steer_y += @cos(clock.phase(self.now, 0.9) + ph * 1.71) * 70.0 * live;
 
             // Cursor interaction: attract far, repel close
             const cdx = mouse_x - b.x;

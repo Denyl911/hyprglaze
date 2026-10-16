@@ -26,7 +26,7 @@ pub const Context = struct {
     an: spectral.Bands = .{},
     onset: spectral.Onset = .{},
 
-    flow: f32 = 0,
+    flow: f64 = 0,
 
     /// Follicle spacing and pile length, both in pixels. Spacing is the
     /// knob that matters for texture: fine strands shimmer as they move and
@@ -80,7 +80,7 @@ pub const Context = struct {
             self.loc_len = c.glGetUniformLocation(prog.program, "iFurLength");
             self.loc_bright = c.glGetUniformLocation(prog.program, "iFurBright");
         }
-        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, self.flow);
+        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
         if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.an.smooth[0]);
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);

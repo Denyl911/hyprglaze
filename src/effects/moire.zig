@@ -79,7 +79,7 @@ pub const Context = struct {
 
     width: f32,
     height: f32,
-    now: f32 = 0,
+    now: f64 = 0,
 
     bodies: [max_bodies]Body = [_]Body{.{}} ** max_bodies,
     count: u32 = max_bodies,
@@ -97,7 +97,7 @@ pub const Context = struct {
     /// Outward-ripple phase clock; advances faster with energy so the rings
     /// flow quicker on louder passages. Accumulated (not time*speed) so the
     /// rate can change without phase discontinuities.
-    flow: f32 = 0,
+    flow: f64 = 0,
 
     // Bass-flux beat detection.
     bass_prev: f32 = 0,
@@ -410,12 +410,12 @@ pub const Context = struct {
 
         // Effect-local time (fire.zig pattern) — keeps shader noise/twinkle
         // coordinates small so f32 precision holds over long sessions.
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, self.now);
+        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, self.bass);
         if (self.loc_fuzz >= 0) c.glUniform1f(self.loc_fuzz, if (self.fuzz) 1.0 else 0.0);
         if (self.loc_ringfreq >= 0) c.glUniform1f(self.loc_ringfreq, 2.0 * std.math.pi / self.wavelength);
         if (self.loc_grating >= 0) c.glUniform1f(self.loc_grating, self.grating);
-        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, self.flow);
+        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
         if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.bands[0]);
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.beat);
         if (self.loc_vel >= 0) {

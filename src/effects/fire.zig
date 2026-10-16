@@ -31,7 +31,7 @@ const tau_dir: f32 = 0.25; // smoothing for wipe axis rotation
 const win_vel_cap: f32 = 8000.0;
 
 const Sample = struct {
-    t: f32 = 0,
+    t: f64 = 0,
     x: f32 = 0,
     y: f32 = 0,
     valid: bool = false,
@@ -41,7 +41,7 @@ const History = struct {
     samples: [hist_size]Sample = [_]Sample{.{}} ** hist_size,
     idx: u8 = 0,
 
-    fn push(self: *History, t: f32, x: f32, y: f32) void {
+    fn push(self: *History, t: f64, x: f32, y: f32) void {
         self.samples[self.idx] = .{ .t = t, .x = x, .y = y, .valid = true };
         self.idx = (self.idx + 1) % hist_size;
     }
@@ -53,13 +53,13 @@ const History = struct {
 
     /// Return mean velocity over the last `target_age` seconds. Picks the
     /// sample whose age is closest to `target_age`.
-    fn velocity(self: *const History, now: f32, target_age: f32) [2]f32 {
+    fn velocity(self: *const History, now: f64, target_age: f32) [2]f32 {
         const recent = self.samples[(self.idx + hist_size - 1) % hist_size];
         if (!recent.valid) return .{ 0, 0 };
 
         const target_t = now - target_age;
         var best: Sample = .{};
-        var best_diff: f32 = std.math.floatMax(f32);
+        var best_diff: f64 = std.math.floatMax(f64);
         for (self.samples) |s| {
             if (!s.valid) continue;
             if (s.t >= recent.t - 0.001) continue;
@@ -71,7 +71,7 @@ const History = struct {
         }
         if (!best.valid) return .{ 0, 0 };
 
-        const dt = recent.t - best.t;
+        const dt: f32 = @floatCast(recent.t - best.t);
         if (dt < min_vel_dt) return .{ 0, 0 };
         return .{ (recent.x - best.x) / dt, (recent.y - best.y) / dt };
     }
@@ -80,7 +80,7 @@ const History = struct {
 const smoothstep = bands_mod.smoothstep;
 
 pub const Context = struct {
-    now: f32 = 0,
+    now: f64 = 0,
     win_hist: [max_windows]History = [_]History{.{}} ** max_windows,
     win_vel: [max_windows][2]f32 = [_][2]f32{.{ 0, 0 }} ** max_windows,
 
@@ -186,7 +186,7 @@ pub const Context = struct {
         // magnitudes small so the inner fbm hash retains f32 precision —
         // global iTime grows unbounded and stalls the noise pattern after
         // a couple of minutes of uptime.
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, self.now);
+        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
     }
 
     pub fn deinit(_: *Context) void {}

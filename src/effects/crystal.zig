@@ -29,7 +29,7 @@ pub const Context = struct {
     onset: spectral.Onset = .{},
 
     /// Light-sweep angle, and the decaying angular kick a beat adds to it.
-    turn: f32 = 0,
+    turn: f64 = 0,
     turn_vel: f32 = 0,
     beat_prev: f32 = 0,
 
@@ -82,7 +82,7 @@ pub const Context = struct {
             self.loc_disp = c.glGetUniformLocation(prog.program, "iCrysDisp");
             self.loc_bright = c.glGetUniformLocation(prog.program, "iCrysBright");
         }
-        if (self.loc_turn >= 0) c.glUniform1f(self.loc_turn, self.turn);
+        if (self.loc_turn >= 0) c.glUniform1f(self.loc_turn, @floatCast(self.turn));
         if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.an.smooth[0]);
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);

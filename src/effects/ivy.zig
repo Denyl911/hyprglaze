@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock.zig");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
@@ -161,7 +162,7 @@ const KnownWin = struct {
     closed: bool = false,
     /// Effect clock when last present, for evicting stale dormant entries
     /// (a close missed while the event socket was down).
-    last_seen: f32 = 0,
+    last_seen: f64 = 0,
 };
 
 /// Cheap deterministic per-node hash — stable across frames so jittered
@@ -256,7 +257,7 @@ pub const Context = struct {
 
     width: f32,
     height: f32,
-    now: f32 = 0,
+    now: f64 = 0,
 
     vines: []Vine,
     spawn_timer: f32 = 0,
@@ -546,7 +547,7 @@ pub const Context = struct {
             (@sin(s * 0.11 + v.seed) * 4.0 +
                 @sin(s * 0.045 + v.seed * 1.7) * 7.0 +
                 @sin(s * 0.021 + v.seed * 3.1) * 3.5) * amp_v +
-            @sin(self.now * 1.2 + s * 0.05 + v.seed) * sway_amp;
+            @sin(clock.phase(self.now, 1.2) + s * 0.05 + v.seed) * sway_amp;
         const l = if (v.inward) -@max(lift, 1.5) else @max(lift, 1.5);
         return .{ hit.pos[0] + hit.normal[0] * l, hit.pos[1] + hit.normal[1] * l };
     }
@@ -565,7 +566,7 @@ pub const Context = struct {
         const off = @sin(s * 0.05 + v.seed * 3.0) * 7.0 +
             @sin(s * 0.013 + v.seed * 1.3) * 16.0 * (s / @max(v.reach, 1.0)) +
             bend * s * s +
-            @sin(self.now * 1.4 + s * 0.06 + v.seed) * sway_amp;
+            @sin(clock.phase(self.now, 1.4) + s * 0.06 + v.seed) * sway_amp;
         return .{ attach[0] + ux * s + px * off, attach[1] + uy * s + py * off };
     }
 
@@ -1116,10 +1117,10 @@ pub const Context = struct {
             p.vel[0] *= damp;
             p.vel[1] *= damp;
             p.vel[1] -= 42.0 * dt; // y-up: leaves fall
-            p.vel[0] += @sin(self.now * 0.9 + p.pos[1] * 0.012) * 45.0 * dt; // breeze
+            p.vel[0] += @sin(clock.phase(self.now, 0.9) + p.pos[1] * 0.012) * 45.0 * dt; // breeze
             // Seesaw: a falling leaf rocks on its air cushion, gliding
             // sideways and briefly catching lift at each swing.
-            const rock = @sin(self.now * 2.4 + p.spin * 7.0 + p.pos[0] * 0.01);
+            const rock = @sin(clock.phase(self.now, 2.4) + p.spin * 7.0 + p.pos[0] * 0.01);
             p.vel[0] += rock * 30.0 * dt;
             p.vel[1] += @abs(rock) * 14.0 * dt;
             p.pos[0] += p.vel[0] * dt;
@@ -1259,7 +1260,7 @@ pub const Context = struct {
 
             // A dying (or senescent) leaf stops fluttering with the music.
             const still = @max(lam, turn_droop);
-            const flutter = @sin(self.now * 1.6 + ls_e * 0.3 + v.seed) *
+            const flutter = @sin(clock.phase(self.now, 1.6) + ls_e * 0.3 + v.seed) *
                 (0.08 + (self.an.smooth[4] + self.an.smooth[5]) * 0.5 * 0.12) * (1.0 - still);
             // Each regrown leaf sits a little differently from the last.
             const gen_jit = if (gen_n >= 1) (fhash(v.seed + gen_n * 7.1, fi) - 0.5) * 0.4 else 0.0;
@@ -1433,7 +1434,7 @@ pub const Context = struct {
 
         // Effect-local time (fire.zig pattern) — keeps shader noise
         // coordinates small so f32 precision holds over long sessions.
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, self.now);
+        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
         if (self.loc_treble >= 0) c.glUniform1f(self.loc_treble, (self.an.smooth[4] + self.an.smooth[5]) * 0.5);
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);

@@ -28,9 +28,9 @@ pub const Context = struct {
     audio: ?*audio_mod.AudioCapture,
 
     /// Lattice phase drift (slow, constant).
-    drift: f32 = 0,
+    drift: f64 = 0,
     /// Grain reseed clock (fixed film cadence).
-    grain_clock: f32 = 0,
+    grain_clock: f64 = 0,
     /// Mono waveform, EMA-smoothed per sample (~50ms memory).
     wave_s: [128]f32 = [_]f32{0} ** 128,
     /// Peak-normalized copy shipped to the shader.
@@ -95,8 +95,8 @@ pub const Context = struct {
             self.loc_reach = c.glGetUniformLocation(prog.program, "iWeftReach");
             self.loc_grain = c.glGetUniformLocation(prog.program, "iWeftGrain");
         }
-        if (self.loc_drift >= 0) c.glUniform1f(self.loc_drift, self.drift);
-        if (self.loc_grain_t >= 0) c.glUniform1f(self.loc_grain_t, self.grain_clock);
+        if (self.loc_drift >= 0) c.glUniform1f(self.loc_drift, @floatCast(self.drift));
+        if (self.loc_grain_t >= 0) c.glUniform1f(self.loc_grain_t, @floatCast(self.grain_clock));
         if (self.loc_wave >= 0) c.glUniform1fv(self.loc_wave, 128, &self.wave_n[0]);
         if (self.loc_scale >= 0) c.glUniform1f(self.loc_scale, self.scale);
         if (self.loc_reach >= 0) c.glUniform1f(self.loc_reach, self.reach);

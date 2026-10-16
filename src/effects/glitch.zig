@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock.zig");
 const shader_mod = @import("../core/shader.zig");
 const config_mod = @import("../core/config.zig");
 const effects = @import("../effects.zig");
@@ -15,7 +16,7 @@ pub const Context = struct {
 
     // 6 bands (mapped to palette colors 1-6) + spectral-flux beats
     an: bands_mod.Splitter = .{},
-    flight_time: f32 = 0,
+    flight_time: f64 = 0,
 
     // Glitch-specific
     glitch_seed: f32 = 0,
@@ -36,7 +37,7 @@ pub const Context = struct {
 
         if (beat_hit) {
             // New seed on beat — drives block/jitter randomness
-            self.glitch_seed = @mod(@sin(self.flight_time * 12345.6789) * 43758.5453, 1.0);
+            self.glitch_seed = @mod(@sin(clock.phase(self.flight_time, 12345.6789)) * 43758.5453, 1.0);
             if (self.glitch_seed < 0) self.glitch_seed += 1.0;
         }
 
@@ -53,7 +54,7 @@ pub const Context = struct {
         // [1] = (band4, band5, beat, flight_time)
         if (prog.i_particles[1] >= 0)
             c.glUniform4f(prog.i_particles[1],
-                self.an.bands[4], self.an.bands[5], self.an.beat, self.flight_time);
+                self.an.bands[4], self.an.bands[5], self.an.beat, @floatCast(self.flight_time));
         // [2] = (glitch_seed, total_energy, bass_smooth, 0)
         if (prog.i_particles[2] >= 0)
             c.glUniform4f(prog.i_particles[2],

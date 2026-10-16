@@ -43,7 +43,7 @@ pub const Context = struct {
 
     width: f32,
     height: f32,
-    now: f32 = 0,
+    now: f64 = 0,
 
     // -- parameters --
     cell_px: f32,
@@ -613,7 +613,7 @@ pub const Context = struct {
         if (self.loc_cell_px >= 0) c.glUniform1f(self.loc_cell_px, self.cell_px);
         if (self.loc_states >= 0) c.glUniform1f(self.loc_states, @floatFromInt(self.n_states));
         if (self.loc_tick_frac >= 0) c.glUniform1f(self.loc_tick_frac, self.tick_frac);
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, self.now);
+        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(self.now));
         if (self.loc_accent >= 0) c.glUniform1f(self.loc_accent, self.accent);
         if (self.loc_accent2 >= 0) c.glUniform1f(self.loc_accent2, self.accent2);
         if (self.loc_misconv >= 0) c.glUniform1f(self.loc_misconv, self.misconv);

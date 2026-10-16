@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("../clock.zig");
 const shader_mod = @import("../../core/shader.zig");
 const config_mod = @import("../../core/config.zig");
 const effects = @import("../../effects.zig");
@@ -66,7 +67,7 @@ pub const Context = struct {
     seed: f32 = 0,
     beams: [max_beams]Beam,
     beam_count: usize,
-    now: f32 = 0,
+    now: f64 = 0,
 
     cached_program: c.GLuint = 0,
     loc_seg: c.GLint = -1,
@@ -204,7 +205,7 @@ pub const Context = struct {
             for (b.segs[0..b.count], 0..) |s, j| {
                 seg[total] = .{ s.a[0], s.a[1], s.b[0], s.b[1] };
                 const arrived = if (j == 0) 1.0 else b.segs[j - 1].intensity;
-                const twinkle = 0.85 + 0.15 * @sin(self.now * 9.0 + @as(f32, @floatFromInt(total)) * 2.3);
+                const twinkle = 0.85 + 0.15 * @sin(clock.phase(self.now, 9.0) + @as(f32, @floatFromInt(total)) * 2.3);
                 legs[total] = .{ s.intensity, arrived, twinkle, along };
                 along += @sqrt((s.b[0] - s.a[0]) * (s.b[0] - s.a[0]) + (s.b[1] - s.a[1]) * (s.b[1] - s.a[1]));
                 total += 1;
@@ -220,7 +221,7 @@ pub const Context = struct {
         if (self.loc_color >= 0) c.glUniform1i(self.loc_color, self.beams[0].color);
         if (self.loc_color2 >= 0) c.glUniform1i(self.loc_color2, self.beams[1].color);
         // Effect-local clock keeps shader time small (fire.zig pattern).
-        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @mod(self.now, 1000.0));
+        if (self.loc_time >= 0) c.glUniform1f(self.loc_time, @floatCast(@mod(self.now, 1000.0)));
         if (self.loc_smoke >= 0) c.glUniform1f(self.loc_smoke, self.smoke);
         if (self.loc_speckle >= 0) c.glUniform1f(self.loc_speckle, self.speckle);
         if (self.loc_seed >= 0) c.glUniform1f(self.loc_seed, self.seed);

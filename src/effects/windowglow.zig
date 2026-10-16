@@ -21,7 +21,7 @@ pub const Context = struct {
     grain: f32,
     /// Grain reseed clock: ~10fps at rest, treble drives it toward 24fps.
     /// Accumulated here so the rate change never stutters the sequence.
-    grain_clock: f32 = 0,
+    grain_clock: f64 = 0,
 
     cached_program: c.GLuint = 0,
     loc_energy: c.GLint = -1,
@@ -62,7 +62,7 @@ pub const Context = struct {
         if (self.loc_energy >= 0) c.glUniform1f(self.loc_energy, self.an.energy_ema);
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
         if (self.loc_grain >= 0) c.glUniform1f(self.loc_grain, self.grain);
-        if (self.loc_grain_t >= 0) c.glUniform1f(self.loc_grain_t, self.grain_clock);
+        if (self.loc_grain_t >= 0) c.glUniform1f(self.loc_grain_t, @floatCast(self.grain_clock));
     }
 
     pub fn deinit(self: *Context) void {

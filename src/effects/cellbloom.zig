@@ -5,6 +5,7 @@ const effects = @import("../effects.zig");
 const audio_mod = @import("visualizer/audio.zig");
 const spectral = @import("spectral.zig");
 const smoothstep = @import("bands.zig").smoothstep;
+const clock = @import("clock.zig");
 
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
@@ -29,7 +30,7 @@ pub const Context = struct {
     an: spectral.Bands = .{},
     onset: spectral.Onset = .{},
     /// Music-paced drift clock (replaces the shader's iTime * 0.15).
-    flow: f32 = 0,
+    flow: f64 = 0,
     width: f32,
     height: f32,
     /// Per daughter (mother = i / 2, sister = i ^ 1): position in surface
@@ -68,12 +69,12 @@ pub const Context = struct {
             const fi: f32 = @floatFromInt(i);
             // Orbit rates stay within ~3x of each other: crisp membranes
             // make a fast seed read as frantic.
-            const px = fract(fi * 0.381966) + wander * @sin(t * (0.35 + fract(fi * 0.618034) * 0.6));
-            const py = fract(fi * 0.618034) + wander * @cos(t * (0.3 + fract(fi * 0.381966) * 0.6));
-            const axis = fi * 2.39996 + t * (0.15 + fract(fi * 0.7548) * 0.2);
+            const px = fract(fi * 0.381966) + wander * @sin(clock.phase(t, 0.35 + fract(fi * 0.618034) * 0.6));
+            const py = fract(fi * 0.618034) + wander * @cos(clock.phase(t, 0.3 + fract(fi * 0.381966) * 0.6));
+            const axis = fi * 2.39996 + clock.phase(t, 0.15 + fract(fi * 0.7548) * 0.2);
             // Life cycle: whole, divide, two daughters, fuse. Staggered
             // phases and rates so divisions trickle across the screen.
-            const u = fract(t * (0.25 + fract(fi * 0.5698) * 0.15) + fi * 0.618034);
+            const u = fract(clock.cycles(t, 0.25 + fract(fi * 0.5698) * 0.15) + fi * 0.618034);
             const split = smoothstep(0.30, 0.55, u) * (1.0 - smoothstep(0.80, 1.0, u));
 
             // Additive weight that grows as the mother nears a window, so a
@@ -105,7 +106,7 @@ pub const Context = struct {
             self.loc_beat = c.glGetUniformLocation(prog.program, "iBloomBeat");
             self.loc_seeds = c.glGetUniformLocation(prog.program, "iBloomSeeds[0]");
         }
-        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, self.flow);
+        if (self.loc_flow >= 0) c.glUniform1f(self.loc_flow, @floatCast(self.flow));
         if (self.loc_bands >= 0) c.glUniform1fv(self.loc_bands, 6, &self.an.smooth[0]);
         if (self.loc_bass >= 0) c.glUniform1f(self.loc_bass, (self.an.smooth[0] + self.an.smooth[1]) * 0.5);
         if (self.loc_beat >= 0) c.glUniform1f(self.loc_beat, self.onset.beat);
