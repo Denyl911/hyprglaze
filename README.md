@@ -112,10 +112,46 @@ theme = "Rosé Pine"
 # spacing = 23.0      # follicle spacing in px; finer shimmers and reads as noise
 # length  = 30.0      # hair length in px (up to 200); longer hair lies further over
 # brightness = 1.0
+# music   = true      # bass shivers the coat
 
 [crystal]
 # dispersion = 1.0    # prismatic colour split through the shards
 # brightness = 1.0    # overall level
+# music   = true      # energy turns the light sweep; beats ripple across the faces
+
+# cellbloom and fluid read only `music` (default true) and `sink`.
+
+[windowglow]
+# grain   = 0.5       # film grain amplitude, 0-2; 0 disables
+# music   = true      # bass and energy swell the glow, treble quickens the grain
+
+[weft]
+# scale   = 26.0      # base stripe wavelength in px (8-120)
+# reach   = 1.0       # window halo radius multiplier (0.3-3)
+# grain   = 1.0       # grain amplitude, 0-2
+# music   = true      # the audio waveform threads through the fringes
+
+[whorl]
+# Cyclic cellular automaton: N states in a ring, a cell advances when enough
+# neighbours already hold the next state; it self-organises into spirals.
+# cell_px   = 10.0    # grid cell size in px (4-64)
+# states    = 16      # states in the ring (3-32)
+# threshold = 3       # neighbours needed to advance (1-12)
+# range     = 2       # neighbourhood radius (1-3); range 2 + threshold 3 sustains spirals
+# sim_hz    = 14.0    # automaton ticks per second (1-60)
+# trail     = 2.5     # phosphor trail behind a wavefront, in ticks (1-20)
+# warmup    = 140     # ticks run before the first frame, so it starts organised
+# stir      = false   # the cursor injects a cycling state, seeding new spirals
+# stir_radius = 2.2   # stir brush radius in cells
+# wall_inset  = 2.0   # px inset before window edges become walls
+# accent    = 1       # phosphor colours: theme slots (-1 = foreground); waves
+# accent2   = 2       #   from the two halves of the ring trade between them
+# music     = true    # each band gates its part of the ring; kicks surge it
+# kick_threshold = 1.0  # kick detector strictness; higher = fewer kicks
+# misconverge = 1.5   # CRT filter: RGB misconvergence in px
+# halation  = 0.6     # CRT filter: glow bleeding around bright fronts
+# vignette  = 0.22    # CRT filter: edge darkening
+# scanbar   = 0.05    # CRT filter: rolling scan bar strength
 
 [transition]
 duration = 0.25
