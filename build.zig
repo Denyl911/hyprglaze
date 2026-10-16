@@ -13,6 +13,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Force LLVM backend + LLD even in Debug. The self-hosted x86_64
+    // linker can't handle the 64-bit PC-relative relocations in the
+    // `.sframe` section of `crt1.o` from gcc 15+ (R_X86_64_PC64). Still true
+    // of the official Zig 0.16.0 build (CI, Oct 2026), even though Arch's
+    // packaged 0.16.0 happens to link it. Routing every optimize mode
+    // through LLVM matches the working ReleaseSafe path.
+    const llvm_backend = true;
+
     // --- main executable ---
     const exe = b.addExecutable(.{
         .name = "hyprglaze",
@@ -24,6 +32,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "toml", .module = toml_dep.module("toml") },
             },
         }),
+        .use_llvm = llvm_backend,
+        .use_lld = llvm_backend,
     });
 
     // Generated protocol headers
@@ -80,6 +90,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        .use_llvm = llvm_backend,
+        .use_lld = llvm_backend,
     });
     ipc_test.root_module.link_libc = true;
     // A debugging aid: run by its step, never installed (or packaged).
@@ -98,6 +110,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "toml", .module = toml_dep.module("toml") },
             },
         }),
+        .use_llvm = llvm_backend,
+        .use_lld = llvm_backend,
     });
     // watcher.zig calls libc (inotify, getenv) via std.c.
     tests.root_module.link_libc = true;
