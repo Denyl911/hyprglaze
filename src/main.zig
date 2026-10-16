@@ -14,6 +14,7 @@ const config_mod = @import("core/config.zig");
 const watcher_mod = @import("core/watcher.zig");
 const hypr_events = @import("core/hypr_events.zig");
 const effects = @import("effects.zig");
+const cli_mod = @import("cli.zig");
 const particles = @import("effects/particles/system.zig");
 
 pub const std_options: std.Options = .{ .log_level = .info };
@@ -24,18 +25,6 @@ var should_exit = std.atomic.Value(bool).init(false);
 fn onSignal(_: std.posix.SIG) callconv(.c) void {
     should_exit.store(true, .release);
 }
-
-const CliArgs = struct {
-    output: ?[]const u8 = null,
-    shader_path: ?[]const u8 = null,
-    theme_name: ?[]const u8 = null,
-    config_path: ?[]const u8 = null,
-    effect_name: ?[]const u8 = null,
-    set_theme: ?[]const u8 = null,
-    list_themes: bool = false,
-    list_effects: bool = false,
-    fps: bool = false,
-};
 
 pub fn main(init: std.process.Init.Minimal) !void {
     // Leak-checking allocator in Debug; lock-cheap smp_allocator in
@@ -52,15 +41,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     std.posix.sigaction(std.posix.SIG.INT, &sig_act, null);
     std.posix.sigaction(std.posix.SIG.TERM, &sig_act, null);
 
-    const cli = try parseCli(allocator, init.args.vector);
-    defer {
-        if (cli.shader_path) |p| allocator.free(p);
-        if (cli.theme_name) |t| allocator.free(t);
-        if (cli.config_path) |p| allocator.free(p);
-        if (cli.effect_name) |e| allocator.free(e);
-        if (cli.set_theme) |t| allocator.free(t);
-        if (cli.output) |o| allocator.free(o);
-    }
+    const cli = try cli_mod.parse(init.args.vector);
 
     if (cli.list_themes) {
         try palette_mod.listThemes(allocator);
@@ -1327,7 +1308,7 @@ fn deriveRawState(
     };
 }
 
-fn loadConfig(allocator: std.mem.Allocator, cli: *const CliArgs) !config_mod.Config {
+fn loadConfig(allocator: std.mem.Allocator, cli: *const cli_mod.CliArgs) !config_mod.Config {
     const cfg = if (cli.config_path) |path| try config_mod.load(allocator, path) else blk: {
         // No config file: the same defaults an empty file gets.
         const default_path = config_mod.resolveConfigPath(allocator) catch
@@ -1340,7 +1321,7 @@ fn loadConfig(allocator: std.mem.Allocator, cli: *const CliArgs) !config_mod.Con
 
 /// Each override is duplicated before the old value is freed, so a failed
 /// allocation leaves `cfg` whole for the errdefer to release.
-fn applyCliOverrides(allocator: std.mem.Allocator, loaded: config_mod.Config, cli: *const CliArgs) !config_mod.Config {
+fn applyCliOverrides(allocator: std.mem.Allocator, loaded: config_mod.Config, cli: *const cli_mod.CliArgs) !config_mod.Config {
     var cfg = loaded;
     errdefer config_mod.deinit(&cfg, allocator);
     if (cli.effect_name) |e| {
@@ -1469,109 +1450,6 @@ fn strEql(a: ?[]const u8, b: ?[]const u8) bool {
     if (a == null and b == null) return true;
     if (a == null or b == null) return false;
     return std.mem.eql(u8, a.?, b.?);
-}
-
-const usage_text =
-    \\Wayland shader wallpaper daemon for Hyprland with window-aware effects.
-    \\
-    \\Usage: hyprglaze [options]
-    \\
-    \\  --output NAME      Monitor to render on, per `hyprctl monitors`
-    \\                     (default: the focused monitor at startup)
-    \\  --config PATH      TOML config path (default: ~/.config/hypr/hyprglaze.toml)
-    \\  --effect NAME      Effect to render (see --list-effects)
-    \\  --shader PATH      Fragment shader path (overrides effect default)
-    \\  --theme NAME       Gogh color scheme name
-    \\  --set-theme NAME   Persist a theme to the config file and exit (hot-reloads)
-    \\  --list-themes      List available themes and exit
-    \\  --list-effects     List available effects and exit
-    \\  --fps              Log frames-per-second every second
-    \\  --help, -h         Show this help
-    \\
-;
-
-/// Minimal in-tree CLI parser. Supports `--key value`, `--key=value`, and
-/// bool flags. Unknown args → error.
-fn parseCli(allocator: std.mem.Allocator, raw_argv: []const [*:0]const u8) !CliArgs {
-    var out = CliArgs{};
-    errdefer {
-        if (out.config_path) |p| allocator.free(p);
-        if (out.effect_name) |p| allocator.free(p);
-        if (out.shader_path) |p| allocator.free(p);
-        if (out.theme_name) |p| allocator.free(p);
-        if (out.set_theme) |p| allocator.free(p);
-        if (out.output) |p| allocator.free(p);
-    }
-
-    // Skip argv[0] (the program path).
-    var i: usize = 1;
-    while (i < raw_argv.len) : (i += 1) {
-        const arg = std.mem.span(raw_argv[i]);
-        // Split "--key=value" → key, value.
-        var key: []const u8 = arg;
-        var value: ?[]const u8 = null;
-        if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
-            key = arg[0..eq];
-            value = arg[eq + 1 ..];
-        }
-
-        const StrField = enum { config, effect, shader, theme, set_theme, output };
-        const BoolField = enum { list_themes, list_effects, fps, help };
-
-        const str_kind: ?StrField = if (std.mem.eql(u8, key, "--config")) .config
-            else if (std.mem.eql(u8, key, "--effect")) .effect
-            else if (std.mem.eql(u8, key, "--shader")) .shader
-            else if (std.mem.eql(u8, key, "--theme")) .theme
-            else if (std.mem.eql(u8, key, "--set-theme")) .set_theme
-            else if (std.mem.eql(u8, key, "--output")) .output
-            else null;
-
-        if (str_kind) |sk| {
-            const v = value orelse blk: {
-                i += 1;
-                if (i >= raw_argv.len) {
-                    std.log.err("missing value for {s}", .{key});
-                    return error.MissingArgValue;
-                }
-                break :blk std.mem.span(raw_argv[i]);
-            };
-            const dup = try allocator.dupe(u8, v);
-            switch (sk) {
-                .config => out.config_path = dup,
-                .effect => out.effect_name = dup,
-                .shader => out.shader_path = dup,
-                .theme => out.theme_name = dup,
-                .set_theme => out.set_theme = dup,
-                .output => out.output = dup,
-            }
-            continue;
-        }
-
-        const bool_kind: ?BoolField = if (std.mem.eql(u8, key, "--list-themes")) .list_themes
-            else if (std.mem.eql(u8, key, "--list-effects")) .list_effects
-            else if (std.mem.eql(u8, key, "--fps")) .fps
-            else if (std.mem.eql(u8, key, "--help") or std.mem.eql(u8, key, "-h")) .help
-            else null;
-
-        if (bool_kind) |bk| switch (bk) {
-            .list_themes => out.list_themes = true,
-            .list_effects => out.list_effects = true,
-            .fps => out.fps = true,
-            .help => {
-                // Plain stdout, not the log: help is program output.
-                const io = std.Io.Threaded.global_single_threaded.io();
-                var stdout_buf: [1024]u8 = undefined;
-                var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buf);
-                stdout_writer.interface.writeAll(usage_text) catch {};
-                stdout_writer.interface.flush() catch {};
-                std.process.exit(0);
-            },
-        } else {
-            std.log.err("unknown argument: {s}", .{arg});
-            return error.UnknownArg;
-        }
-    }
-    return out;
 }
 
 fn loadShaderFile(allocator: std.mem.Allocator, path: []const u8) ![:0]const u8 {
