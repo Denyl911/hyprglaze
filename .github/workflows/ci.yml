@@ -16,12 +16,24 @@ jobs:
       - name: Install system packages
         # Arch container is the canonical build environment (PKGBUILD path).
         # nodejs is needed by actions/checkout; git for fetching deps.
+        # Protocol XMLs are vendored in protocols/; wayland-scanner comes
+        # with wayland.
         run: |
           pacman -Syu --noconfirm --needed \
-            zig wayland wayland-protocols mesa libglvnd stb libpulse \
+            wayland mesa libglvnd stb libpulse glslang \
             base-devel git nodejs
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      # Zig from minimum_zig_version in build.zig.zon, not whatever Arch
+      # ships today, so CI builds with the version the package promises.
+      - uses: mlugg/setup-zig@v2
+
+      - name: Validate shaders
+        run: |
+          for f in shaders/*.frag tools/harness_probe.frag; do
+            glslangValidator "$f" || exit 1
+          done
 
       - name: zig build test
         run: zig build test
