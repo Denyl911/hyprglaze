@@ -19,10 +19,14 @@
 
 const std = @import("std");
 
+const log = std.log.scoped(.shadertoy);
+
 const shader_mod = @import("../core/shader.zig");
+const texture_mod = @import("../core/texture.zig");
 const iohelp = @import("../core/io_helper.zig");
 const effects = @import("../effects.zig");
 const Uniforms = @import("uniforms.zig").Uniforms;
+const config_mod = @import("../core/config.zig");
 
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
@@ -36,6 +40,8 @@ const n_channels = 4;
 const sample_rate: f32 = 44100.0;
 
 pub const Context = struct {
+    /// Allocator for owned channel paths.
+    allocator: std.mem.Allocator,
     /// iFrame: frames since the effect started. Starts at -1 so the first
     /// update — which runs before the first draw — reports 0, like Shadertoy.
     /// Wrapping add: a shader that multiplies iFrame would overflow an i32
@@ -54,6 +60,15 @@ pub const Context = struct {
     /// been given. Replaced by real sources when channels are wired.
     blank_tex: c.GLuint = 0,
 
+    /// Paths configured per channel (owned). Empty means "blank".
+    channel_paths: [n_channels][]const u8 = .{ "", "", "", "" },
+    /// Loaded textures (lazy). null until first upload attempt.
+    channel_tex: [n_channels]?texture_mod.Texture = .{ null, null, null, null },
+    /// Whether a load was attempted for this channel.
+    channel_loaded: [n_channels]bool = .{ false, false, false, false },
+    /// Whether loading failed (so we don't retry every frame).
+    channel_failed: [n_channels]bool = .{ false, false, false, false },
+
     u: Uniforms(.{
         .frame = "iFrame",
         .date = "iDate",
@@ -68,8 +83,19 @@ pub const Context = struct {
         .channel_time = "iChannelTime[0]",
     }) = .{},
 
-    pub fn init() Context {
-        return .{};
+    pub fn init(allocator: std.mem.Allocator, params: config_mod.EffectParams) Context {
+        var ctx = Context{ .allocator = allocator };
+        // Read channelN from the [shadertoy] section. Paths are duped into
+        // the effect allocator because params strings live in the config arena.
+        var i: usize = 0;
+        while (i < n_channels) : (i += 1) {
+            var key_buf: [16]u8 = undefined;
+            const key = std.fmt.bufPrint(&key_buf, "channel{d}", .{i}) catch continue;
+            if (params.getString(key, null)) |p| {
+                ctx.channel_paths[i] = allocator.dupe(u8, p) catch "";
+            }
+        }
+        return ctx;
     }
 
     pub fn update(self: *Context, state: effects.FrameState) void {
@@ -85,9 +111,34 @@ pub const Context = struct {
         c.glUseProgram(prog.program);
 
         if (self.blank_tex == 0) self.blank_tex = makeBlankTexture();
+
+        // Lazy-load configured channels the first time we upload, while the
+        // GL context is current.
+        for (0..n_channels) |i| {
+            if (self.channel_loaded[i] or self.channel_failed[i]) continue;
+            if (self.channel_paths[i].len == 0) {
+                self.channel_loaded[i] = true;
+                continue;
+            }
+            self.channel_loaded[i] = true;
+            const t = texture_mod.Texture.loadFromFile(self.channel_paths[i]) catch |err| {
+                log.warn("shadertoy channel {d} failed to load '{s}': {}", .{ i, self.channel_paths[i], err });
+                self.channel_failed[i] = true;
+                continue;
+            };
+            self.channel_tex[i] = t;
+        }
+
+        var resolution: [n_channels][3]f32 = undefined;
         for (0..n_channels) |unit| {
             c.glActiveTexture(@as(c.GLenum, c.GL_TEXTURE0) + @as(c.GLuint, @intCast(unit)));
-            c.glBindTexture(c.GL_TEXTURE_2D, self.blank_tex);
+            if (self.channel_tex[unit]) |tex| {
+                c.glBindTexture(c.GL_TEXTURE_2D, tex.id);
+                resolution[unit] = .{ @floatFromInt(tex.width), @floatFromInt(tex.height), 1.0 };
+            } else {
+                c.glBindTexture(c.GL_TEXTURE_2D, self.blank_tex);
+                resolution[unit] = .{ 1.0, 1.0, 1.0 };
+            }
         }
 
         self.u.use(prog.program);
@@ -102,21 +153,18 @@ pub const Context = struct {
         const d = wallDate();
         self.u.f4(.date, d[0], d[1], d[2], d[3]);
 
-        // The channels are all the same 1x1 black texture, so report that
-        // size rather than leaving the array zeroed — a shader that divides
-        // by iChannelResolution[0].xy would otherwise get 0/0.
-        const resolution = [_][3]f32{
-            .{ 1.0, 1.0, 1.0 },
-            .{ 1.0, 1.0, 1.0 },
-            .{ 1.0, 1.0, 1.0 },
-            .{ 1.0, 1.0, 1.0 },
-        };
         const times = [_]f32{ self.time, self.time, self.time, self.time };
         self.u.f3v(.channel_resolution, n_channels, &resolution);
         self.u.f1v(.channel_time, n_channels, &times);
     }
 
     pub fn deinit(self: *Context) void {
+        for (0..n_channels) |i| {
+            if (self.channel_tex[i]) |*t| t.deinit();
+            self.channel_tex[i] = null;
+            if (self.channel_paths[i].len > 0) self.allocator.free(self.channel_paths[i]);
+            self.channel_paths[i] = "";
+        }
         if (self.blank_tex != 0) {
             c.glDeleteTextures(1, &self.blank_tex);
             self.blank_tex = 0;

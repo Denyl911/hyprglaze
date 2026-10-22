@@ -399,7 +399,8 @@ pub const Renderer = struct {
         // only on the path: the shadertoy effect wraps, nothing else does. So
         // an effect switch recompiles even when `shader` is pinned to the same
         // file. The path comparison alone would keep the unwrapped program.
-        if (std.mem.eql(u8, new_path, self.shader_path) and !name_changed) {
+        const channels_changed = shadertoyChannelsChanged(self, old, new);
+        if (std.mem.eql(u8, new_path, self.shader_path) and !name_changed and !channels_changed) {
             self.allocator.free(new_path);
             if (self.pal) |*p| self.prog.setPalette(p);
             return;
@@ -415,6 +416,23 @@ pub const Renderer = struct {
         self.shader_path = new_path;
     }
 };
+
+fn shadertoyChannelsChanged(r: *Renderer, old: *const config_mod.Config, new: *const config_mod.Config) bool {
+    if (!shadertoy.enabledFor(r.effect_name)) return false;
+    const op = config_mod.effectParams(old, "shadertoy");
+    const np = config_mod.effectParams(new, "shadertoy");
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        var key_buf: [16]u8 = undefined;
+        const key = std.fmt.bufPrint(&key_buf, "channel{d}", .{i}) catch continue;
+        const a = op.getString(key, null);
+        const b = np.getString(key, null);
+        if (a == null and b == null) continue;
+        if (a == null or b == null) return true;
+        if (!std.mem.eql(u8, a.?, b.?)) return true;
+    }
+    return false;
+}
 
 fn strEql(a: ?[]const u8, b: ?[]const u8) bool {
     if (a == null and b == null) return true;
