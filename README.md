@@ -345,9 +345,12 @@ The `shadertoy` effect runs shaders written against Shadertoy's convention — a
 `void mainImage(out vec4 fragColor, in vec2 fragCoord)` plus the `iResolution`,
 `iTime` and `iMouse` globals. `src/core/shadertoy.zig` wraps the file before
 compiling it: it injects `#version 300 es`, the uniform block and the `main()`
-that calls `mainImage`, and blanks the shader's own `#version`, `precision` and
-`main()` — keeping every newline, so a GLSL error still names the right line of
-your file (offset by the wrapper's header, `header_line_count` in that file).
+that calls `mainImage`; hoists top-level `#extension` directives; aliases the
+GLSL ES 2 `texture2D`/`textureCube` calls to `texture`; and blanks the shader's
+own `#version`, `precision`, `main()` and any redundant parameterless
+`mainImage()`. The body is bracketed with `#line` directives, so a GLSL error
+names the line in your file directly. `iTime` restarts at 0 whenever the shader
+is (re)loaded.
 
 ```toml
 effect = "shadertoy"

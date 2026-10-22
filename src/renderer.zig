@@ -67,6 +67,13 @@ pub const Renderer = struct {
     /// Launch fade origin, on main's clock. Reset by every rebuild, so a
     /// rebuilt surface fades in from the background like a launch.
     fade_start: f64 = 0,
+    /// Shadertoy restarts iTime at 0 when the shader changes. main's clock
+    /// keeps running, so the renderer subtracts this base to produce iTime.
+    shader_time_base: f32 = 0,
+    /// Set when a new program is installed; the next real frame records
+    /// `shader_time_base`. `prime` leaves it pending: it always draws at
+    /// time 0 and must not consume the reset.
+    reset_shader_time: bool = true,
     /// The surface changed size (or was rebuilt), so window rects cached in
     /// surface space were flipped about a stale height. Consumed by main.
     rects_stale: bool = false,
@@ -212,6 +219,7 @@ pub const Renderer = struct {
         errdefer self.egl.deinit();
         self.prog = try compileShader(self.allocator, self.shader_path, self.effect_name);
         self.gl_live = true;
+        self.reset_shader_time = true;
         if (self.pal) |*p| self.prog.setPalette(p);
 
         self.effect = fresh;
@@ -227,7 +235,14 @@ pub const Renderer = struct {
     pub fn prime(self: *Renderer, wl: *wayland.WaylandState, scene: Scene) !void {
         self.fx().upload(&self.prog);
         try wl.requestFrame();
+        // Prime always draws at shader time 0. Keep a pending shadertoy reset
+        // pending so the first real frame records the base; otherwise the
+        // base would be 0 and iTime would jump to main's clock.
+        const reset_pending = self.reset_shader_time;
+        self.shader_time_base = 0;
+        self.reset_shader_time = false;
         self.draw(scene, 0.0, transition.fadeIn(0.0, self.cfg.fade_in));
+        self.reset_shader_time = reset_pending;
         self.egl.swapBuffers() catch |err| log.warn("first swapBuffers on a new surface failed: {}", .{err});
     }
 
@@ -250,10 +265,24 @@ pub const Renderer = struct {
             if (addr == trans.prev_focused_address) prev_index = @intCast(i);
         }
 
+        // Shadertoy semantics: iTime starts at 0 when the shader is loaded.
+        // main's clock is monotonic, so subtract the base recorded on the
+        // first frame after a compile. The wrap matches main's 10,000-second
+        // shader clock.
+        var shader_time = time;
+        if (shadertoy.enabledFor(self.effect_name)) {
+            if (self.reset_shader_time) {
+                self.shader_time_base = time;
+                self.reset_shader_time = false;
+            }
+            shader_time = time - self.shader_time_base;
+            if (shader_time < 0) shader_time += 10_000.0;
+        }
+
         self.prog.draw(.{
             .width = self.width,
             .height = self.height,
-            .time = time,
+            .time = shader_time,
             .mouse_x = trans.current_cursor[0],
             .mouse_y = trans.current_cursor[1],
             .win_x = trans.current_win.x,
@@ -380,6 +409,7 @@ pub const Renderer = struct {
         if (self.pal) |*p| new_prog.setPalette(p);
         self.prog.deinit();
         self.prog = new_prog;
+        self.reset_shader_time = true;
         log.info("shader reloaded: {s}", .{new_path});
         self.allocator.free(self.shader_path);
         self.shader_path = new_path;

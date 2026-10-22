@@ -100,6 +100,27 @@ pub fn build(b: *std.Build) void {
     const ipc_run_cmd = b.addRunArtifact(ipc_test);
     ipc_run_step.dependOn(&ipc_run_cmd.step);
 
+    // --- Shadertoy wrapper validator ---
+    const shadertoy_wrap = b.addExecutable(.{
+        .name = "shadertoy-wrap",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/shadertoy_wrap.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .use_llvm = llvm_backend,
+        .use_lld = llvm_backend,
+    });
+    shadertoy_wrap.root_module.link_libc = true;
+    // `zig build shadertoy-wrap -- shader.frag` prints the wrapped source.
+    // Run by its step, never installed (or packaged).
+    const shadertoy_wrap_step = b.step("shadertoy-wrap", "Wrap a Shadertoy .frag to stdout");
+    const shadertoy_wrap_cmd = b.addRunArtifact(shadertoy_wrap);
+    shadertoy_wrap_step.dependOn(&shadertoy_wrap_cmd.step);
+    if (b.args) |args| {
+        shadertoy_wrap_cmd.addArgs(args);
+    }
+
     // --- unit tests ---
     const tests = b.addTest(.{
         .root_module = b.createModule(.{

@@ -35,6 +35,13 @@ jobs:
             glslangValidator "$f" || exit 1
           done
 
+      - name: Validate Shadertoy wrapper
+        run: |
+          for f in tools/fixtures/*.frag; do
+            zig build shadertoy-wrap -- "$f" > /tmp/wrapped.frag || exit 1
+            glslangValidator /tmp/wrapped.frag || exit 1
+          done
+
       - name: zig build test
         run: zig build test
 
