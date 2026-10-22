@@ -193,7 +193,7 @@ pub const ShaderProgram = struct {
         if (self.i_time >= 0)
             c.glUniform1f(self.i_time, u.time);
         if (self.i_mouse >= 0)
-            c.glUniform4f(self.i_mouse, u.mouse_x, u.mouse_y, 0.0, 0.0);
+            c.glUniform4f(self.i_mouse, u.mouse_x, u.mouse_y, -1.0, -1.0);
         if (self.i_window >= 0)
             c.glUniform4f(self.i_window, u.win_x, u.win_y, u.win_w, u.win_h);
         if (self.i_transition >= 0)
