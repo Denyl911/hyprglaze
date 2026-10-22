@@ -864,6 +864,7 @@ fn applyCliOverrides(allocator: std.mem.Allocator, loaded: config_mod.Config, cl
         // Pinning from the command line changes the wait default too.
         if (!cfg.output_wait_set) cfg.output_wait = config_mod.defaultOutputWait(cfg.output);
     }
+    config_mod.applyOutputOverride(&cfg, allocator, cfg.output);
     return cfg;
 }
 
@@ -878,6 +879,8 @@ fn reloadConfig(
 ) !void {
     var new_cfg = try config_mod.load(allocator, cfg.config_path);
     errdefer config_mod.deinit(&new_cfg, allocator);
+
+    config_mod.applyOutputOverride(&new_cfg, allocator, active_output);
 
     trans.transition_duration = new_cfg.transition_duration;
     trans.cursor_smoothing = new_cfg.cursor_smoothing;

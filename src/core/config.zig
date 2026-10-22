@@ -122,6 +122,9 @@ pub const Config = struct {
     /// live in `raw_arena` — see the lifetime warning on
     /// `EffectParams.getString`.
     raw_table: ?toml.Table = null,
+    /// Resolved override table for the active output (from `[output.<name>]`
+    /// or `[outputs.<name>]`), if any. Effect params are read from it first.
+    output_override: ?toml.Table = null,
 };
 
 pub fn load(allocator: std.mem.Allocator, path: []const u8) !Config {
@@ -213,6 +216,68 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8, source_path: []cons
     };
 }
 
+pub fn applyOutputOverride(cfg: *Config, allocator: std.mem.Allocator, output_name: ?[]const u8) void {
+    const root_table = cfg.raw_table orelse return;
+    const overrides_val = blk: {
+        if (root_table.get("outputs")) |v| break :blk v;
+        if (root_table.get("output")) |v| {
+            if (v == .table) break :blk v;
+        }
+        break :blk null;
+    } orelse return;
+    if (overrides_val != .table) return;
+    const name = output_name orelse return;
+    const ov_val = overrides_val.table.*.get(name) orelse return;
+    if (ov_val != .table) return;
+    const t = ov_val.table.*;
+    cfg.output_override = t;
+
+    if (t.get("effect")) |v| {
+        if (v == .string) {
+            allocator.free(cfg.effect);
+            cfg.effect = allocator.dupe(u8, v.string) catch cfg.effect;
+        }
+    }
+    if (t.get("shader")) |v| {
+        if (v == .string) {
+            const expanded = expandHome(allocator, v.string) catch v.string;
+            allocator.free(cfg.shader);
+            cfg.shader = expanded;
+        }
+    }
+    if (t.get("theme")) |v| {
+        if (v == .string) {
+            if (cfg.theme) |old| allocator.free(old);
+            cfg.theme = allocator.dupe(u8, v.string) catch cfg.theme;
+        }
+    }
+
+    if (t.get("transition")) |v| {
+        if (v == .table) {
+            const tp = EffectParams{ .table = v.table.* };
+            cfg.transition_duration = tp.getFloat("duration", cfg.transition_duration);
+            cfg.fade_in = @max(0.0, tp.getFloat("fade_in", cfg.fade_in));
+            if (tp.getString("workspace_slide", null)) |s| cfg.workspace_slide = parseSlideOverride(s);
+            const wd = tp.getFloat("workspace_duration", cfg.workspace_duration);
+            cfg.workspace_duration = wd;
+            if (tp.getString("workspace_spring", null)) |s| cfg.workspace_spring = parseSpring(s);
+            if (tp.getString("window_spring", null)) |s| cfg.window_spring = parseSpring(s);
+        }
+    }
+    if (t.get("cursor")) |v| {
+        if (v == .table) {
+            const cp = EffectParams{ .table = v.table.* };
+            cfg.cursor_smoothing = cp.getFloat("smoothing", cfg.cursor_smoothing);
+        }
+    }
+    if (t.get("geometry")) |v| {
+        if (v == .table) {
+            const gp = EffectParams{ .table = v.table.* };
+            cfg.geometry_smoothing = gp.getFloat("smoothing", cfg.geometry_smoothing);
+        }
+    }
+}
+
 pub fn defaultOutputWait(output: ?[]const u8) f32 {
     return if (output != null) 60.0 else 0.0;
 }
@@ -251,6 +316,11 @@ fn warnSpring(s: []const u8) ?workspace_slide.Spring {
 
 /// Get effect-specific params from a TOML section by name
 pub fn effectParams(cfg: *const Config, section: []const u8) EffectParams {
+    if (cfg.output_override) |ov| {
+        if (ov.get(section)) |val| {
+            if (val == .table) return EffectParams{ .table = val.table.* };
+        }
+    }
     return effectParamsFromTable(cfg.raw_table, section);
 }
 
@@ -504,4 +574,59 @@ test "parse empty config uses defaults" {
     var cfg = try parse(std.testing.allocator, "", "/tmp/test.toml");
     defer deinit(&cfg, std.testing.allocator);
     try std.testing.expectEqualStrings("particles", cfg.effect);
+}
+
+test "applyOutputOverride merges matching output" {
+    const src =
+        \\effect = "particles"
+        \\theme = "catppuccin"
+        \\
+        \\[outputs."DP-1"]
+        \\effect = "shadertoy"
+        \\theme = "nord"
+        \\
+    ;
+    var cfg = try parse(std.testing.allocator, src, "/tmp/test.toml");
+    defer deinit(&cfg, std.testing.allocator);
+
+    try std.testing.expectEqualStrings("particles", cfg.effect);
+    try std.testing.expectEqualStrings("catppuccin", cfg.theme.?);
+
+    applyOutputOverride(&cfg, std.testing.allocator, "DP-1");
+    try std.testing.expectEqualStrings("shadertoy", cfg.effect);
+    try std.testing.expectEqualStrings("nord", cfg.theme.?);
+}
+
+test "applyOutputOverride ignores non-matching output" {
+    const src =
+        \\effect = "particles"
+        \\
+        \\[outputs."DP-1"]
+        \\effect = "shadertoy"
+        \\
+    ;
+    var cfg = try parse(std.testing.allocator, src, "/tmp/test.toml");
+    defer deinit(&cfg, std.testing.allocator);
+
+    applyOutputOverride(&cfg, std.testing.allocator, "HDMI-A-1");
+    try std.testing.expectEqualStrings("particles", cfg.effect);
+    try std.testing.expect(cfg.output_override == null);
+}
+
+test "applyOutputOverride inherits unspecified fields" {
+    const src =
+        \\effect = "particles"
+        \\[cursor]
+        \\smoothing = 0.5
+        \\
+        \\[outputs."DP-1"]
+        \\effect = "starfield"
+        \\
+    ;
+    var cfg = try parse(std.testing.allocator, src, "/tmp/test.toml");
+    defer deinit(&cfg, std.testing.allocator);
+
+    applyOutputOverride(&cfg, std.testing.allocator, "DP-1");
+    try std.testing.expectEqualStrings("starfield", cfg.effect);
+    try std.testing.expectEqual(@as(f32, 0.5), cfg.cursor_smoothing);
 }
