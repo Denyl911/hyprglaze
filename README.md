@@ -339,6 +339,36 @@ jumps = true          # occasional hyperspace jumps
 
 List available sinks with `pactl list short sinks`.
 
+### Per-output configuration
+
+Run one hyprglaze instance per monitor (the shipped `hyprglaze@.service`
+does this). A single config can carry per-monitor overrides under
+`[outputs."<name>"]`, keyed by the monitor name from `hyprctl monitors`:
+
+```toml
+effect = "particles"
+theme = "catppuccin"
+
+[outputs."DP-1"]
+effect = "shadertoy"
+shader = "~/.local/share/kde-shaders/Auroras.frag"
+theme = "nord"
+
+[outputs."HDMI-A-1"]
+effect = "starfield"
+stars = 4000
+```
+
+Absent keys inherit from the base config. Launch each instance with the
+matching output:
+
+```sh
+hyprglaze --output "DP-1"
+hyprglaze --output "HDMI-A-1"
+```
+
+`output = "..."` at the top level is still the monitor name for a single
+instance and is never taken from an override. Overrides apply on reload.
 ### Shadertoy shaders
 
 The `shadertoy` effect runs shaders written against Shadertoy's convention — a
