@@ -24,6 +24,7 @@ const log = std.log.scoped(.shadertoy);
 
 const shader_mod = @import("../core/shader.zig");
 const texture_mod = @import("../core/texture.zig");
+const audio_mod = @import("audio.zig");
 const iohelp = @import("../core/io_helper.zig");
 const effects = @import("../effects.zig");
 const Uniforms = @import("uniforms.zig").Uniforms;
@@ -63,6 +64,13 @@ pub const Context = struct {
 
     /// Paths configured per channel (owned). Empty means "blank".
     channel_paths: [n_channels][]const u8 = .{ "", "", "", "" },
+
+    /// Optional PulseAudio capture for an audio-reactive channel. When set,
+    /// channel 0 is fed a 256x2 texture (row 0 = waveform) instead of the
+    /// configured image.
+    audio: ?*audio_mod.AudioCapture = null,
+    audio_tex: c.GLuint = 0,
+
     /// Loaded textures (lazy). null until first upload attempt.
     channel_tex: [n_channels]?texture_mod.Texture = .{ null, null, null, null },
     /// Whether a load was attempted for this channel.
@@ -96,6 +104,12 @@ pub const Context = struct {
                 ctx.channel_paths[i] = allocator.dupe(u8, p) catch "";
             }
         }
+        if (params.getBool("audio", false)) {
+            ctx.audio = audio_mod.spawn(allocator, params) catch |err| blk: {
+                log.warn("shadertoy audio capture failed: {}", .{err});
+                break :blk null;
+            };
+        }
         return ctx;
     }
 
@@ -116,6 +130,7 @@ pub const Context = struct {
         // Lazy-load configured channels the first time we upload, while the
         // GL context is current.
         for (0..n_channels) |i| {
+            if (self.audio != null and i == 0) continue;
             if (self.channel_loaded[i] or self.channel_failed[i]) continue;
             if (self.channel_paths[i].len == 0) {
                 self.channel_loaded[i] = true;
@@ -130,9 +145,42 @@ pub const Context = struct {
             self.channel_tex[i] = t;
         }
 
+        // Audio-reactive texture for channel 0 (waveform row).
+        if (self.audio) |cap| {
+            if (self.audio_tex == 0) {
+                c.glGenTextures(1, &self.audio_tex);
+                c.glBindTexture(c.GL_TEXTURE_2D, self.audio_tex);
+                c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
+                c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+                c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+                c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+            }
+            const wave = cap.getWaveform();
+            var pixels: [256 * 2 * 4]u8 = undefined;
+            for (0..256) |x| {
+                const v: u8 = @intFromFloat((wave[x] * 0.5 + 0.5) * 255.0);
+                pixels[x * 4 + 0] = v;
+                pixels[x * 4 + 1] = v;
+                pixels[x * 4 + 2] = v;
+                pixels[x * 4 + 3] = 255;
+                const base = (256 + x) * 4;
+                pixels[base + 0] = 0;
+                pixels[base + 1] = 0;
+                pixels[base + 2] = 0;
+                pixels[base + 3] = 255;
+            }
+            c.glBindTexture(c.GL_TEXTURE_2D, self.audio_tex);
+            c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_RGBA, 256, 2, 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, &pixels);
+        }
+
         var resolution: [n_channels][3]f32 = undefined;
         for (0..n_channels) |unit| {
             c.glActiveTexture(@as(c.GLenum, c.GL_TEXTURE0) + @as(c.GLuint, @intCast(unit)));
+            if (unit == 0 and self.audio != null) {
+                c.glBindTexture(c.GL_TEXTURE_2D, self.audio_tex);
+                resolution[0] = .{ 256.0, 2.0, 1.0 };
+                continue;
+            }
             if (self.channel_tex[unit]) |tex| {
                 c.glBindTexture(c.GL_TEXTURE_2D, tex.id);
                 resolution[unit] = .{ @floatFromInt(tex.width), @floatFromInt(tex.height), 1.0 };
@@ -166,6 +214,12 @@ pub const Context = struct {
             if (self.channel_paths[i].len > 0) self.allocator.free(self.channel_paths[i]);
             self.channel_paths[i] = "";
         }
+        if (self.audio_tex != 0) {
+            c.glDeleteTextures(1, &self.audio_tex);
+            self.audio_tex = 0;
+        }
+        if (self.audio) |cap| audio_mod.shutdown(cap, self.allocator);
+        self.audio = null;
         if (self.blank_tex != 0) {
             c.glDeleteTextures(1, &self.blank_tex);
             self.blank_tex = 0;
