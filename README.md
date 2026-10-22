@@ -350,7 +350,8 @@ GLSL ES 2 `texture2D`/`textureCube` calls to `texture`; and blanks the shader's
 own `#version`, `precision`, `main()` and any redundant parameterless
 `mainImage()`. The body is bracketed with `#line` directives, so a GLSL error
 names the line in your file directly. `iTime` restarts at 0 whenever the shader
-is (re)loaded.
+is (re)loaded. `iMouse.xy` follows the pointer; `iMouse.zw` are always -1
+because hyprglaze does not track mouse buttons.
 
 ```toml
 effect = "shadertoy"

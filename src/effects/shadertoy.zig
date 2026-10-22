@@ -9,8 +9,9 @@
 //! already set, and the `iChannel0..3` samplers.
 //!
 //! What comes for free from `ShaderProgram.draw`: `iResolution`, `iTime`,
-//! `iMouse` (xy; z/w are always 0 — hyprglaze does not read mouse buttons, so
-//! shaders that gate interaction on `iMouse.z` render static) and the theme
+//! `iMouse` (xy from the pointer; z/w are always -1 — hyprglaze does not
+//! track mouse buttons, so shaders that gate interaction on `iMouse.z`
+//! render as if the button were released) and the theme
 //! palette, which is why the wrapper also declares `iPalette*`.
 //!
 //! Usage: `hyprglaze --effect shadertoy --shader /path/to/thing.frag`, or
