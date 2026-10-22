@@ -8,7 +8,7 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 
 - Renders behind all windows via wlr-layer-shell, on a chosen monitor or one instance per monitor
 - Draws at the monitor's native resolution on scaled displays, via fractional-scale and viewporter
-- Shadertoy-compatible GLSL uniforms (iResolution, iTime, iMouse, iWindow)
+- Shadertoy-style GLSL uniforms (iResolution, iTime, iMouse, iWindow) on every shader, plus a `shadertoy` effect that runs unmodified `mainImage()` shaders
 - Passes every visible window to shaders with identity-based focus, tracking each one through Hyprland's own move and resize animation (the curve is detected and replayed, since Hyprland only reports where a window is going) and following interactive drags exactly
 - Receives compositor state as push events from a small Lua watcher installed inside Hyprland, so geometry stays live even mid-drag; the cursor is asked for directly each frame, so it is never more than one input event behind
 - Captures system audio through PipeWire/PulseAudio, auto-detecting the output monitor
@@ -47,6 +47,7 @@ A wallpaper daemon for Hyprland that renders GLSL shaders and modular effects on
 | `laser` | Lasers fired from opposite screen corners toward the cursor in two theme colours, reflecting off windows and the screen's edges and dimming with every bounce, through smoke they light up; one resonates with the lows, the other with the highs |
 | `flux` | Magnetic field lines: every window is a bar magnet, the cursor a compass needle; pulses flow north to south with the music |
 | `crystal` | A ray-traced cluster of quartz shards with real refraction and dispersion; your windows are the lights, and the focused one is the key light |
+| `shadertoy` | Runs any Shadertoy-style shader written around `mainImage()`, including the 240 shaders in kde-shader-wallpaper's library. hyprglaze wraps it with the Shadertoy uniforms, the entry point and the theme palette. Point it at a file with `--shader`; channels are not wired yet (see below) |
 
 ## Requirements
 
@@ -85,7 +86,7 @@ sudo zig build -Doptimize=ReleaseSafe --prefix /usr
 # Effects: particles, windowglow, cellbloom, concentric, fluid, starfield,
 #          visualizer, milkdrop, glitch, buddy, ai-buddy, tide, fire, swarm,
 #          voltaic, moire, ivy, whorl, weft, crystal, fur, amorphous, laser,
-#          flux
+#          flux, shadertoy
 effect = "fluid"
 theme = "Rosé Pine"
 # output = "DP-1"     # monitor to render on; default is the focused one
@@ -338,6 +339,71 @@ jumps = true          # occasional hyperspace jumps
 
 List available sinks with `pactl list short sinks`.
 
+### Shadertoy shaders
+
+The `shadertoy` effect runs shaders written against Shadertoy's convention — a
+`void mainImage(out vec4 fragColor, in vec2 fragCoord)` plus the `iResolution`,
+`iTime` and `iMouse` globals. `src/core/shadertoy.zig` wraps the file before
+compiling it: it injects `#version 300 es`, the uniform block and the `main()`
+that calls `mainImage`, and blanks the shader's own `#version`, `precision` and
+`main()` — keeping every newline, so a GLSL error still names the right line of
+your file (offset by the wrapper's header, `header_line_count` in that file).
+
+```toml
+effect = "shadertoy"
+shader = "~/.local/share/kde-shaders/Auroras.frag"
+```
+
+```sh
+hyprglaze --effect shadertoy --shader ~/path/to/thing.frag
+```
+
+The wrapper is applied by the shader loader, so `shader` can point anywhere —
+including straight into a clone of
+[kde-shader-wallpaper](https://github.com/y4my4my4m/kde-shader-wallpaper),
+which is what it was built for:
+
+```sh
+hyprglaze --effect shadertoy \
+  --shader ~/kde-shader-wallpaper/package/contents/ui/Shaders/Auroras.frag
+```
+
+With no `shader` set it runs the bundled demo, `shaders/shadertoy/default.frag`,
+which lives outside `shaders/*.frag` because it is a Shadertoy body rather than
+a complete shader.
+
+Measured against that library's 247 `.frag` files — 240 screen shaders plus 7
+`_bufferA` passes: **245 compile** through the wrapper. The two that do not are
+broken upstream — `N64_Logo.frag` has `#define SURFACE_DIST.0001` (the space is
+missing, so the macro name is `SURFACE_DIST.0001`) and `Ocean_Sky.frag` uses an
+undeclared `intersect`.
+
+What is not wired up yet:
+
+- **`iChannel0..3`.** 64 of the 247 files sample a channel (72 mention one, some
+  only in comments). The samplers currently point at a 1×1 black texture, so
+  those shaders render without their input and the loader logs a warning saying
+  so. `iChannelResolution` reports that 1×1 size and `iChannelTime` follows
+  `iTime`, so a shader that divides by the channel size gets a stable answer
+  rather than 0/0. A shader whose only input is a channel will still look empty;
+  36 of the 64 use `iChannel0` alone.
+- **Buffer A–D.** 7 shaders are two-pass — `Foo.frag` plus `Foo_bufferA.frag`,
+  with the channel mapping declared in a `// @channels ...` comment. hyprglaze
+  has no generic ping-pong buffer chain, so use a single-pass shader.
+- **`iMouse.z` / `iMouse.w`.** Shadertoy reports click state there. hyprglaze
+  samples the cursor position but not the buttons, so they are always 0, and the
+  17 shaders that gate interaction on a click render static.
+
+`iFrame` (starting at 0), `iTimeDelta`, `iFrameRate`, `iSampleRate`, `iDate`
+(local time, month 0-based and day 1-based like Shadertoy) and
+`iChannelResolution`/`iChannelTime` are all filled in. The wrapper also declares
+hyprglaze's `iPalette`, `iPaletteSize`, `iPaletteBg` and `iPaletteFg`, so a
+shader can follow the active theme — a stock Shadertoy shader simply ignores
+them.
+
+Some of these shaders are heavy: raymarchers that take a hundred steps per
+pixel. `--fps` caps the frame rate if one of them pins your GPU.
+
 ### AI buddy (AWS Bedrock)
 
 The `ai-buddy` effect uses Claude Haiku via AWS Bedrock for decision-making. Create `~/.config/hypr/hyprglaze-aws.env`:
@@ -385,9 +451,12 @@ The watcher emits one geometry event per monitor, carrying that monitor's active
 | `iParticleCount` | `int` | Number of active entries |
 | `iSprite` | `sampler2D` | Sprite sheet texture / FBO feedback |
 
-Effects are free to upload their own uniforms and textures instead: `particles` sends its balls as `iBalls`, `laser` its beam legs as `iLaser*`, and `ivy` bins thousands of stems and leaves into screen tiles through data textures so each pixel visits only what can reach it. `src/effects/uniforms.zig` caches an effect's own uniform locations for it.
+Effects are free to upload their own uniforms and textures instead: `particles` sends its balls as `iBalls`, `laser` its beam legs as `iLaser*`, and `ivy` bins thousands of stems and leaves into screen tiles through data textures so each pixel visits only what can reach it. `src/effects/uniforms.zig` caches an effect's own uniform locations for it. The `shadertoy` effect adds `iFrame`, `iDate`, `iTimeDelta`, `iFrameRate`, `iSampleRate` and the `iChannel0..3` samplers the same way.
 
 ## Adding an Effect
+
+To run someone else's Shadertoy shader rather than write an effect, use the
+`shadertoy` effect and `--shader` (see [Shadertoy shaders](#shadertoy-shaders)).
 
 1. Create `src/effects/myeffect.zig` with a `pub const Context` struct (or a directory for complex effects)
 2. Implement `init()`, `update(state)`, `upload(shader)`, `deinit()`

@@ -25,6 +25,15 @@ pub fn nowNs() u64 {
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
+/// Realtime-clock seconds since the Unix epoch, or 0 if the clock is
+/// unreadable. For the Shadertoy `iDate` uniform, which wants wall time
+/// rather than the daemon's monotonic clock.
+pub fn wallSeconds() i64 {
+    var ts: Timespec = .{ .sec = 0, .nsec = 0 };
+    _ = clock_gettime(0, &ts); // CLOCK_REALTIME
+    return ts.sec;
+}
+
 /// Minimal monotonic timer.
 pub const Timer = struct {
     start_ns: u64,

@@ -24,6 +24,7 @@ const hypr = @import("core/hypr.zig");
 const palette_mod = @import("core/palette.zig");
 const transition = @import("core/transition.zig");
 const config_mod = @import("core/config.zig");
+const shadertoy = @import("core/shadertoy.zig");
 const effects = @import("effects.zig");
 
 const log = std.log.scoped(.hyprglaze);
@@ -209,7 +210,7 @@ pub const Renderer = struct {
 
         self.egl = try egl_mod.EglState.init(wl.display, wl.egl_window.?);
         errdefer self.egl.deinit();
-        self.prog = try compileShader(self.allocator, self.shader_path);
+        self.prog = try compileShader(self.allocator, self.shader_path, self.effect_name);
         self.gl_live = true;
         if (self.pal) |*p| self.prog.setPalette(p);
 
@@ -365,13 +366,17 @@ pub const Renderer = struct {
         // Shader — explicit config, else the effect's default.
         const desired = if (new.shader.len > 0) new.shader else self.fx().defaultShader();
         const new_path = try config_mod.expandHome(self.allocator, desired);
-        if (std.mem.eql(u8, new_path, self.shader_path)) {
+        // The source the program is built from depends on the effect, not
+        // only on the path: the shadertoy effect wraps, nothing else does. So
+        // an effect switch recompiles even when `shader` is pinned to the same
+        // file. The path comparison alone would keep the unwrapped program.
+        if (std.mem.eql(u8, new_path, self.shader_path) and !name_changed) {
             self.allocator.free(new_path);
             if (self.pal) |*p| self.prog.setPalette(p);
             return;
         }
         errdefer self.allocator.free(new_path);
-        var new_prog = try compileShader(self.allocator, new_path);
+        var new_prog = try compileShader(self.allocator, new_path, self.effect_name);
         if (self.pal) |*p| new_prog.setPalette(p);
         self.prog.deinit();
         self.prog = new_prog;
@@ -387,10 +392,20 @@ fn strEql(a: ?[]const u8, b: ?[]const u8) bool {
     return std.mem.eql(u8, a.?, b.?);
 }
 
-fn compileShader(allocator: std.mem.Allocator, path: []const u8) !shader_mod.ShaderProgram {
-    const source = try loadShaderFile(allocator, path);
+fn compileShader(allocator: std.mem.Allocator, path: []const u8, effect: []const u8) !shader_mod.ShaderProgram {
+    const source = try loadShader(allocator, path, effect);
     defer allocator.free(source);
     return shader_mod.ShaderProgram.init(source);
+}
+
+/// Read a fragment shader and, for the `shadertoy` effect, wrap it into a
+/// compilable GLES 3.0 shader (see `core/shadertoy.zig`). Every load goes
+/// through here so the first compile and a rebuild can't disagree.
+pub fn loadShader(allocator: std.mem.Allocator, path: []const u8, effect: []const u8) ![:0]const u8 {
+    const raw = try loadShaderFile(allocator, path);
+    if (!shadertoy.enabledFor(effect)) return raw;
+    defer allocator.free(raw);
+    return shadertoy.wrap(allocator, raw);
 }
 
 /// Read a fragment shader: CWD-relative or absolute, else from the system

@@ -28,6 +28,11 @@ __MACOSX/
 # Downloaded asset packs (not ours to redistribute)
 Prototype_Character/
 
+# Third-party shader library clones (the shadertoy effect reads them in place
+# via --shader). Their shaders are variously CC BY-NC-SA and GPL-3.0, which
+# does not belong in this MIT tree.
+kde-shader-wallpaper/
+
 # Unused sprite assets
 sprites/character.json
 sprites/character.png

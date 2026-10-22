@@ -31,6 +31,7 @@ const fur = @import("effects/fur.zig");
 const amorphous = @import("effects/amorphous.zig");
 const laser = @import("effects/laser/context.zig");
 const flux = @import("effects/flux.zig");
+const shadertoy = @import("effects/shadertoy.zig");
 
 /// Class and title of one mapped window (truncated copies), parallel to
 /// `FrameState.windows` by index.
@@ -107,6 +108,7 @@ pub const Effect = union(enum) {
     amorphous: amorphous.Context,
     laser: laser.Context,
     flux: flux.Context,
+    shadertoy: shadertoy.Context,
 
     /// Config section an effect reads its params from. Defaults to the
     /// variant name; the exceptions: starfield and milkdrop intentionally
@@ -172,7 +174,8 @@ pub const Effect = union(enum) {
     }
 
     /// Fragment shader an effect loads by default: shaders/<variant>.frag,
-    /// except ai_buddy which renders with buddy's frag.
+    /// except ai_buddy which renders with buddy's frag and shadertoy whose
+    /// default is a bare `mainImage` body under shaders/shadertoy/.
     pub fn defaultShader(self: *const Effect) []const u8 {
         return switch (self.*) {
             inline else => |_, tag| comptime shaderOf(@tagName(tag)),
@@ -190,6 +193,10 @@ pub const Effect = union(enum) {
 };
 
 fn shaderOf(comptime field_name: []const u8) []const u8 {
+    // The shadertoy effect's default is a Shadertoy *body* — no #version, no
+    // main(), the wrapper supplies both — so it lives in its own directory:
+    // `shaders/*.frag` is the set CI validates as complete shaders.
+    if (std.mem.eql(u8, field_name, "shadertoy")) return "shaders/shadertoy/default.frag";
     const base = if (std.mem.eql(u8, field_name, "ai_buddy")) "buddy" else field_name;
     return "shaders/" ++ base ++ ".frag";
 }

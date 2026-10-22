@@ -86,7 +86,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const shader_path_expanded = try config_mod.expandHome(allocator, shader_path);
     defer allocator.free(shader_path_expanded);
 
-    const frag_source = renderer_mod.loadShaderFile(allocator, shader_path_expanded) catch |err| {
+    const frag_source = renderer_mod.loadShader(allocator, shader_path_expanded, cfg.effect) catch |err| {
         log.err("failed to load shader '{s}': {}", .{ shader_path_expanded, err });
         return err;
     };
