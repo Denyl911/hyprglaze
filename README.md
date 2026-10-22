@@ -353,6 +353,11 @@ names the line in your file directly. `iTime` restarts at 0 whenever the shader
 is (re)loaded. `iMouse.xy` follows the pointer; `iMouse.zw` are always -1
 because hyprglaze does not track mouse buttons.
 
+Channels: set `channel0`..`channel3` under `[shadertoy]` to image paths; they are
+loaded (PNG/JPG) and bound to `iChannel0`..`iChannel3`, with real
+`iChannelResolution`. Set `audio = true` to feed `iChannel0` a 256×2 audio
+texture (row 0 = waveform) from PulseAudio; `music = false` disables capture.
+
 ```toml
 effect = "shadertoy"
 shader = "~/.local/share/kde-shaders/Auroras.frag"
